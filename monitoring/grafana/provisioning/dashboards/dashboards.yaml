@@ -1,0 +1,13 @@
+# Dashboards are files: edits made in the UI are refused, so change the JSON
+# in monitoring/grafana/dashboards instead.
+apiVersion: 1
+
+providers:
+  - name: zuno
+    folder: Zuno
+    folderUid: zuno
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

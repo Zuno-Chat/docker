@@ -1,0 +1,97 @@
+# Alert rules. Grafana stores annotations and queries here as written, without
+# expanding environment variables, so $labels and $values stay templates.
+# Their folder is not "Zuno": Grafana would create a second folder by that name
+# beside the dashboards'.
+#
+# Every rule reads Prometheus, which scrapes only Synapse and Sygnal: there are
+# no exporters, so nothing here covers the host, Postgres, Redis or the public
+# endpoint (README.md, Monitoring).
+#
+# noDataState: Alerting on urgent rules means a dead Prometheus pages too. The
+# limit of one host: if the host or Grafana is down, nothing pages.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: urgent
+    folder: Zuno alerts
+    interval: 1m
+    rules:
+      - uid: synapse-process-down
+        title: Synapse process down
+        condition: C
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        labels: {severity: urgent}
+        annotations:
+          summary: "Synapse {{ $labels.process }} is not answering metrics scrapes."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'up{job=~"master|generic_worker"}'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+  - orgId: 1
+    name: warning
+    folder: Zuno alerts
+    interval: 1m
+    rules:
+      # README.md, Sizing: one Python thread per process, so near 100% of one
+      # core means that process is the limit.
+      - uid: synapse-cpu-high
+        title: Synapse process CPU saturated
+        condition: C
+        for: 15m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          summary: "Synapse {{ $labels.process }} has used {{ humanizePercentage $values.A.Value }} of a core for 15 minutes."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 900, to: 0}
+            model: {refId: A, instant: true, expr: 'rate(process_cpu_seconds_total{job=~"master|generic_worker"}[5m])'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0.9]}}]}
+
+      - uid: push-failures
+        title: Push deliveries failing
+        condition: C
+        for: 15m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          summary: "Synapse has been failing to deliver pushes to the gateway for 15 minutes."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 900, to: 0}
+            model: {refId: A, instant: true, expr: 'sum(rate(synapse_http_httppusher_http_pushes_failed_total[15m]))'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      - uid: sygnal-down
+        title: Sygnal down
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          summary: "Sygnal is not answering metrics scrapes: pushes cannot reach FCM."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'up{job="sygnal"}'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}

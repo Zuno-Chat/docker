@@ -1,0 +1,20 @@
+# Serves /sync, /events and /initialSync: the gateway sends them here
+# (SYNAPSE_SYNC_URL), keeping long-polls off the main process.
+worker_app: synapse.app.generic_worker
+worker_name: sync_worker
+worker_log_config: /config/log.yaml
+
+# The gateway sends no media here. Loading the media repo anyway would run the
+# hourly media_retention purge a second time, alongside main.
+enable_media_repo: false
+
+worker_listeners:
+  - type: http
+    port: 8083
+    bind_addresses: ['0.0.0.0']
+    x_forwarded: true
+    resources:
+      - names: [client]
+  - type: metrics
+    port: 9000
+    bind_addresses: ['0.0.0.0']

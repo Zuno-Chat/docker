@@ -1,0 +1,16 @@
+# Owns the single-instance duties homeserver.yaml assigns to background_worker:
+# background tasks, user directory, push delivery. Serves no client traffic;
+# the HTTP listener exists for the healthcheck.
+worker_app: synapse.app.generic_worker
+worker_name: background_worker
+worker_log_config: /config/log.yaml
+
+worker_listeners:
+  - type: http
+    port: 8083
+    bind_addresses: ['0.0.0.0']
+    resources:
+      - names: [health]
+  - type: metrics
+    port: 9000
+    bind_addresses: ['0.0.0.0']

@@ -1,0 +1,22 @@
+# Scaling step 2 (README.md): writes events to the database instead of the
+# main process. Idle until homeserver.yaml lists it in instance_map and
+# stream_writers.events; its compose service runs with COMPOSE_PROFILES=events.
+worker_app: synapse.app.generic_worker
+worker_name: event_persister
+worker_log_config: /config/log.yaml
+
+worker_listeners:
+  # Other processes hand it events over replication.
+  - type: http
+    port: 9093
+    bind_addresses: ['0.0.0.0']
+    resources:
+      - names: [replication]
+  - type: http
+    port: 8083
+    bind_addresses: ['0.0.0.0']
+    resources:
+      - names: [health]
+  - type: metrics
+    port: 9000
+    bind_addresses: ['0.0.0.0']

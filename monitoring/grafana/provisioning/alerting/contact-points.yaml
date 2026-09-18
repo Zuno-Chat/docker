@@ -1,0 +1,30 @@
+# Alerts go to one ntfy topic (NTFY_URL in .env). ntfy's inline template turns
+# Grafana's webhook JSON into "[firing] <alert>" plus one summary line per
+# alert; its built-in grafana template would ignore the priority. The t and m
+# parameters, decoded:
+#   t=[{{.status}}] {{.commonLabels.alertname}}
+#   m={{range .alerts}}{{.annotations.summary}}<newline>{{end}}
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: ntfy
+    receivers:
+      - uid: ntfy
+        type: webhook
+        settings:
+          url: ${NTFY_URL}?tpl=yes&priority=3&tags=warning&t=%5B%7B%7B.status%7D%7D%5D%20%7B%7B.commonLabels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7B.annotations.summary%7D%7D%0A%7B%7Bend%7D%7D
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: ${NTFY_TOKEN}
+
+  - orgId: 1
+    name: ntfy-urgent
+    receivers:
+      - uid: ntfy-urgent
+        type: webhook
+        settings:
+          url: ${NTFY_URL}?tpl=yes&priority=5&tags=rotating_light&t=%5B%7B%7B.status%7D%7D%5D%20%7B%7B.commonLabels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7B.annotations.summary%7D%7D%0A%7B%7Bend%7D%7D
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: ${NTFY_TOKEN}

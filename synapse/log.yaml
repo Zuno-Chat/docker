@@ -1,0 +1,31 @@
+# Shared by every Synapse process. Docker captures stdout; the compose logging
+# driver rotates it.
+version: 1
+
+formatters:
+  precise:
+    format: '%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(request)s - %(message)s'
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    formatter: precise
+  # Batches INFO lines into fewer writes. WARNING and above flush at once;
+  # nothing waits longer than `period` seconds.
+  buffer:
+    class: synapse.logging.handlers.PeriodicallyFlushingMemoryHandler
+    target: console
+    capacity: 50
+    flushLevel: 30
+    period: 5
+
+loggers:
+  # DEBUG logs every SQL statement with its arguments, access tokens included.
+  synapse.storage.SQL:
+    level: INFO
+
+root:
+  level: INFO
+  handlers: [buffer]
+
+disable_existing_loggers: false

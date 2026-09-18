@@ -1,0 +1,41 @@
+# Scrapes every Zuno process over the monitoring network. Alert rules live in
+# Grafana (monitoring/grafana/provisioning/alerting); rules/ holds only the
+# recording rules Synapse's dashboard needs.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/rules/*.rules
+
+scrape_configs:
+  # job and index are the labels Synapse's dashboard filters on.
+  - job_name: synapse
+    metrics_path: /_synapse/metrics
+    static_configs:
+      - targets: [synapse:9000]
+        labels: {job: master, index: "1", process: main}
+      - targets: [synapse-sync:9000]
+        labels: {job: generic_worker, index: "1", process: sync_worker}
+      - targets: [synapse-background:9000]
+        labels: {job: generic_worker, index: "2", process: background_worker}
+      # Scaling step 2 (README.md): uncomment with the event persister.
+      # - targets: [synapse-event-persister:9000]
+      #   labels: {job: generic_worker, index: "3", process: event_persister}
+
+  # Runs only with COMPOSE_PROFILES=push; without it this target reports down.
+  - job_name: sygnal
+    static_configs:
+      - targets: [sygnal:8000]
+
+  # METRICS_LISTEN_ADDR in docker-compose.yml. Reports down until an image
+  # that exposes it is deployed (README.md, Monitoring).
+  - job_name: gateway
+    static_configs:
+      - targets: [gateway:9090]
+
+  - job_name: monitoring
+    static_configs:
+      - targets: [localhost:9090]
+        labels: {service: prometheus}

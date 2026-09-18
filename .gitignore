@@ -1,0 +1,4 @@
+.env
+ssl/*.key
+sygnal/*.json
+sygnal/*.p8

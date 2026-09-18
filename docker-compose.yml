@@ -1,0 +1,436 @@
+# Zuno server: Cloudflare -> gateway (TLS, public edge) -> Synapse main + sync
+# worker + background worker, over Postgres and Redis; Sygnal for push.
+# Per-host values and secrets: .env (from .env.example). Sizing and scaling
+# steps: README.md.
+#
+# Networks: `edge` has internet egress and holds everything that talks to
+# the gateway or the outside; `backend` is internal-only and holds the data
+# stores, so neither the gateway nor Sygnal can reach Postgres or Redis.
+# `monitoring` (internal) carries scrapes; only Grafana reaches out, through
+# `monitoring-egress`.
+#
+# Compose checks ${VAR:?} even in services whose profile is off, so the
+# monitoring profile's secrets use ${VAR:-} and are checked at container start.
+
+# Project name: containers are zuno_<service>, volumes zuno_<volume>.
+name: zuno
+
+x-logging: &logging
+  # Rotated and compressed. The default json-file driver never rotates and
+  # fills the disk under real traffic.
+  driver: local
+  options:
+    max-size: 20m
+    max-file: "5"
+
+# Every config bind uses this long form. With the short `./x:/y:ro` syntax a
+# missing source is created as a root-owned *directory*, compose reports no
+# error, and the service then fails on a config file that is secretly a
+# directory. create_host_path: false makes Docker refuse to start instead, and
+# it creates nothing. Named volumes stay short: Docker is meant to create those.
+x-bind: &bind
+  type: bind
+  read_only: true
+  bind:
+    create_host_path: false
+
+x-synapse: &synapse
+  image: ghcr.io/element-hq/synapse:v1.161.0
+  restart: unless-stopped
+  logging: *logging
+  stop_grace_period: 30s
+  environment:
+    # homeserver.yaml has no database password; libpq reads this instead.
+    PGPASSWORD: "${POSTGRES_PASSWORD:?set in .env}"
+    # bootstrap.sh writes it to /data/sentry.yaml. Shared by every Synapse
+    # service so that changing it recreates them all.
+    SYNAPSE_SENTRY_DSN: "${SYNAPSE_SENTRY_DSN:-}"
+  volumes:
+    - <<: *bind
+      source: ./synapse
+      target: /config
+    - synapse-data:/data
+  networks: [edge, backend, monitoring]
+
+# Workers listen on 8083 (synapse/workers/*.yaml).
+x-worker-healthcheck: &worker-healthcheck
+  test: ["CMD-SHELL", "curl -fSs http://localhost:8083/health || exit 1"]
+  interval: 15s
+  timeout: 5s
+  retries: 4
+  start_period: 30s
+
+# Under memory pressure the kernel kills monitoring before Synapse (0) or
+# Postgres (-500).
+x-monitoring: &monitoring
+  profiles: ["monitoring"]
+  restart: unless-stopped
+  logging: *logging
+  oom_score_adj: 800
+  networks: [monitoring]
+
+services:
+  gateway:
+    container_name: zuno_gateway
+    # CI tags every build sha-<commit>; never deploy latest.
+    image: ghcr.io/zuno-chat/zuno-gateway:sha-7592d8b
+    restart: unless-stopped
+    logging: *logging
+    # Lets in-flight /sync long-polls (30s) finish on redeploy.
+    stop_grace_period: 40s
+    ports:
+      - "443:8080"
+    volumes:
+      # Cloudflare Origin CA cert for *.zuno.chat. The image runs as nonroot
+      # (uid 65532), which must be able to read the key: see README.md.
+      - <<: *bind
+        source: ./ssl
+        target: /certs
+    # monitoring carries nothing but Prometheus's scrape of the port below.
+    networks: [edge, monitoring]
+    environment:
+      LISTEN_ADDR: ":8080"
+      # Second listener, never published: serves only GET /metrics, reachable
+      # from the monitoring network. Empty disables metrics entirely.
+      METRICS_LISTEN_ADDR: ":9090"
+      TLS_CERT_FILE: /certs/cf_origin_cert.pem
+      TLS_KEY_FILE: /certs/cf_origin_key.key
+
+      SYNAPSE_BASE_URL: "http://synapse:8008"
+      SYNAPSE_SYNC_URL: "http://synapse-sync:8083"
+
+      CF_CALLS_ENABLED: "${CF_CALLS_ENABLED:-true}"
+      CF_CALLS_APP_ID: "${CF_CALLS_APP_ID:-}"
+      CF_CALLS_APP_SECRET: "${CF_CALLS_APP_SECRET:-}"
+      CF_CALLS_BASE_URL: "https://rtc.live.cloudflare.com"
+
+      CF_TURN_ENABLED: "${CF_TURN_ENABLED:-true}"
+      CF_TURN_KEY_ID: "${CF_TURN_KEY_ID:-}"
+      CF_TURN_API_TOKEN: "${CF_TURN_API_TOKEN:-}"
+      CF_TURN_BASE_URL: "https://rtc.live.cloudflare.com/v1/turn/keys"
+      CF_TURN_CRED_TTL: "${CF_TURN_CRED_TTL:-2h}"
+
+      PUSHER_ENABLED: "${PUSHER_ENABLED:-true}"
+      PUSHER_BASE_URL: "http://sygnal:5000"
+      PUSHER_ALLOWED_CIDRS: "${PUSHER_ALLOWED_CIDRS:?set in .env: this server's public IPs}"
+      PUSHER_RATE_LIMIT_RPS: "${PUSHER_RATE_LIMIT_RPS:-50}"
+      PUSHER_RATE_LIMIT_BURST: "${PUSHER_RATE_LIMIT_BURST:-200}"
+
+      RATE_LIMIT_RPS: "5"
+      RATE_LIMIT_BURST: "10"
+
+      TILES_ENABLED: "${TILES_ENABLED:-true}"
+      TILES_UPSTREAM_URL: "${TILES_UPSTREAM_URL:-}"
+      TILES_USER_AGENT: "${TILES_USER_AGENT:-}"
+      TILES_CACHE_SIZE: "${TILES_CACHE_SIZE:-128MB}"
+      TILES_CACHE_TTL: "${TILES_CACHE_TTL:-168h}"
+      TILES_RATE_LIMIT_RPS: "${TILES_RATE_LIMIT_RPS:-10}"
+      TILES_RATE_LIMIT_BURST: "${TILES_RATE_LIMIT_BURST:-60}"
+
+      # Self-service registration (POST /register/token): the gateway mints a
+      # Synapse registration token through /_synapse/admin/v1/registration_tokens
+      # and emails it with Brevo — scripts/invite.sh by hand, automated. Off by
+      # default; the three below it are required once it is on.
+      REGISTRATION_ENABLED: "${REGISTRATION_ENABLED:-false}"
+      SYNAPSE_ADMIN_TOKEN: "${SYNAPSE_ADMIN_TOKEN:-}"
+      BREVO_API_KEY: "${BREVO_API_KEY:-}"
+      BREVO_SENDER_EMAIL: "${BREVO_SENDER_EMAIL:-}"
+      # Empty falls through to the gateway's own default for each of these, so
+      # no default is written twice. See .env.example for the values.
+      BREVO_SENDER_NAME: "${BREVO_SENDER_NAME:-}"
+      BREVO_BASE_URL: "${BREVO_BASE_URL:-}"
+      BREVO_TEMPLATE_ID: "${BREVO_TEMPLATE_ID:-}"
+      REGISTRATION_TOKEN_TTL: "${REGISTRATION_TOKEN_TTL:-}"
+      REGISTRATION_DAILY_CAP: "${REGISTRATION_DAILY_CAP:-}"
+      REGISTRATION_RATE_LIMIT_RPS: "${REGISTRATION_RATE_LIMIT_RPS:-}"
+      REGISTRATION_RATE_LIMIT_BURST: "${REGISTRATION_RATE_LIMIT_BURST:-}"
+      REGISTRATION_EMAIL_RATE_LIMIT_RPS: "${REGISTRATION_EMAIL_RATE_LIMIT_RPS:-}"
+      REGISTRATION_EMAIL_RATE_LIMIT_BURST: "${REGISTRATION_EMAIL_RATE_LIMIT_BURST:-}"
+
+      # Device tokens for /calls, /turn and /tiles.
+      ENROLL_TOKEN_TTL: "${ENROLL_TOKEN_TTL:-}"
+      ENROLL_RATE_LIMIT_RPS: "${ENROLL_RATE_LIMIT_RPS:-}"
+      ENROLL_RATE_LIMIT_BURST: "${ENROLL_RATE_LIMIT_BURST:-}"
+
+      BLOCK_FEDERATION: "true"
+      # Every request arrives from a Cloudflare edge address. Without its
+      # ranges here, all clients share a handful of IPs and Synapse's per-IP
+      # login and registration limits throttle everyone at once.
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:?set in .env: Cloudflare ranges}"
+      TRUSTED_PROXY_HEADER: "${TRUSTED_PROXY_HEADER:-x-forwarded-for}"
+
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-}"
+      MAX_BODY_SIZE: "${MAX_BODY_SIZE:-100MB}"
+      HSTS_MAX_AGE: "${HSTS_MAX_AGE:-0}"
+      HSTS_INCLUDE_SUBDOMAINS: "${HSTS_INCLUDE_SUBDOMAINS:-false}"
+
+      # Upstream connection reuse and shutdown. Empty uses the gateway's
+      # defaults; stop_grace_period above should stay above SHUTDOWN_GRACE_PERIOD.
+      PROXY_IDLE_CONN_TIMEOUT: "${PROXY_IDLE_CONN_TIMEOUT:-}"
+      PROXY_MAX_IDLE_CONNS_PER_HOST: "${PROXY_MAX_IDLE_CONNS_PER_HOST:-}"
+      SHUTDOWN_GRACE_PERIOD: "${SHUTDOWN_GRACE_PERIOD:-}"
+    depends_on:
+      synapse:
+        condition: service_healthy
+      synapse-sync:
+        condition: service_healthy
+
+  postgres:
+    container_name: zuno_postgres
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    logging: *logging
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    # Parallel queries allocate from /dev/shm; Docker's 64MB default fails them.
+    shm_size: 256mb
+    # A SIGKILL mid-shutdown forces crash recovery on the next start.
+    stop_grace_period: 60s
+    # Under memory pressure the kernel kills a Synapse process (restarted in
+    # seconds) before Postgres (every connection drops, then crash recovery).
+    oom_score_adj: -500
+    environment:
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set in .env}"
+      POSTGRES_DB: synapse
+      # Synapse requires a UTF-8 database with C collation.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      # Postgres 18 moved the data tree: mount /var/lib/postgresql, not .../data.
+      - postgres-data:/var/lib/postgresql
+      - <<: *bind
+        source: ./postgres/postgresql.conf
+        target: /etc/postgresql/postgresql.conf
+    networks: [backend]
+    healthcheck:
+      # -h forces TCP so the init-time socket-only server does not count as ready.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U synapse -d synapse"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    container_name: zuno_redis
+    image: redis:8.10.1-alpine
+    restart: unless-stopped
+    logging: *logging
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - <<: *bind
+        source: ./redis/redis.conf
+        target: /usr/local/etc/redis/redis.conf
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot bootstrap (synapse/bootstrap.sh): signing key and secret files
+  # on first run, and sentry.yaml on every run.
+  synapse-init:
+    container_name: zuno_synapse-init
+    <<: *synapse
+    restart: "no"
+    entrypoint: ["/bin/sh", "/config/bootstrap.sh"]
+
+  synapse:
+    container_name: zuno_synapse
+    <<: *synapse
+    # Loopback only, for synapse-admin: the SPA runs in your browser, so the
+    # browser needs its own route to the admin API (README.md, Administration).
+    # Nothing outside this host can reach it; the public gateway still does not
+    # route /_synapse/admin.
+    ports: ["127.0.0.1:8008:8008"]
+    command: run -m synapse.app.homeserver --config-path=/config/homeserver.yaml --config-path=/data/sentry.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fSs http://localhost:8008/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      # First start runs the full schema migration on Postgres.
+      start_period: 120s
+    depends_on:
+      synapse-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  synapse-sync:
+    container_name: zuno_synapse-sync
+    <<: *synapse
+    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/sync.yaml --config-path=/data/sentry.yaml
+    healthcheck: *worker-healthcheck
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  synapse-background:
+    container_name: zuno_synapse-background
+    <<: *synapse
+    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/background.yaml --config-path=/data/sentry.yaml
+    healthcheck: *worker-healthcheck
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  # Scaling step 2 (README.md). Idle until homeserver.yaml names it in
+  # instance_map and stream_writers; enable with COMPOSE_PROFILES=push,events.
+  synapse-event-persister:
+    container_name: zuno_synapse-event-persister
+    <<: *synapse
+    profiles: ["events"]
+    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/event_persister.yaml --config-path=/data/sentry.yaml
+    healthcheck: *worker-healthcheck
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  sygnal:
+    container_name: zuno_sygnal
+    # Built and published by element-hq/sygnal; the Docker Hub name is the
+    # only one it publishes to (there is no ghcr.io/element-hq/sygnal).
+    image: matrixdotorg/sygnal:v0.17.0
+    # Sygnal refuses to start without its FCM credentials, so it runs only
+    # with COMPOSE_PROFILES=push (README.md).
+    profiles: ["push"]
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      SYGNAL_CONF: /sygnal/sygnal.yaml
+      SENTRY_DSN: "${SYGNAL_SENTRY_DSN:-}"
+    volumes:
+      - <<: *bind
+        source: ./sygnal
+        target: /sygnal
+    networks: [edge, monitoring]
+    healthcheck:
+      # The image's own check calls curl, which its runtime layer lacks.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 25s
+
+  # Synapse's admin UI (README.md, Administration). Stock nginx serving a static
+  # bundle and nothing else: the app talks to Synapse straight from your browser
+  # over the second SSH tunnel, so this container never reaches Synapse itself.
+  # It uses hash routing, so no try_files rewrite is needed either.
+  synapse-admin:
+    container_name: zuno_synapse-admin
+    image: awesometechnologies/synapse-admin:0.11.4
+    # An admin panel has no reason to run unless someone is using it.
+    profiles: ["admin"]
+    restart: unless-stopped
+    logging: *logging
+    # SSH tunnel only: ssh -L 8081:localhost:8081 <server>.
+    ports: ["127.0.0.1:8081:80"]
+    volumes:
+      # Pins the homeserver URL to the tunnelled Synapse, so the login screen
+      # has nothing to type. Both ports are fixed by this file.
+      - <<: *bind
+        source: ./synapse-admin/config.json
+        target: /usr/share/nginx/html/config.json
+    networks: [admin]
+    mem_limit: 32m
+    healthcheck:
+      test: ["CMD", "wget", "-qO/dev/null", "http://localhost/config.json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # --- Monitoring: COMPOSE_PROFILES=push,monitoring (README.md, Monitoring) ---
+
+  prometheus:
+    container_name: zuno_prometheus
+    <<: *monitoring
+    image: prom/prometheus:v3.14.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=2GB
+      - --log.level=warn
+    volumes:
+      - <<: *bind
+        source: ./monitoring/prometheus
+        target: /etc/prometheus
+      - prometheus-data:/prometheus
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "wget", "-qO/dev/null", "http://localhost:9090/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+
+  grafana:
+    container_name: zuno_grafana
+    <<: *monitoring
+    image: grafana/grafana:13.2.2
+    # Without an admin password Grafana falls back to admin/admin, and without
+    # NTFY_URL alert provisioning fails: refuse to start instead.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - '[ -n "$$GF_SECURITY_ADMIN_PASSWORD" ] && [ -n "$$NTFY_URL" ] || { echo "Set GRAFANA_ADMIN_PASSWORD and NTFY_URL in .env" >&2; exit 1; }; exec /run.sh'
+    # SSH tunnel only: ssh -L 3000:localhost:3000 <server>
+    ports: ["127.0.0.1:3000:3000"]
+    environment:
+      # Applies when grafana-data is first created; later changes need
+      # grafana cli admin reset-admin-password.
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-}"
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_LOG_LEVEL: warn
+      GOMEMLIMIT: 300MiB
+      # Read by provisioning/alerting/contact-points.yaml.
+      NTFY_URL: "${NTFY_URL:-}"
+      NTFY_TOKEN: "${NTFY_TOKEN:-}"
+    volumes:
+      - <<: *bind
+        source: ./monitoring/grafana/provisioning
+        target: /etc/grafana/provisioning
+      - <<: *bind
+        source: ./monitoring/grafana/dashboards
+        target: /etc/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    networks: [monitoring, monitoring-egress]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "wget", "-qO/dev/null", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+networks:
+  edge:
+  backend:
+    internal: true
+  monitoring:
+    internal: true
+  monitoring-egress:
+  # Holds synapse-admin alone, which talks to nothing: it exists only so the
+  # container has a network its port can be published on. Not internal, and it
+  # cannot be — Docker does not reach a published port over an internal-only
+  # network, so `internal: true` here makes 127.0.0.1:8081 refuse connections
+  # (Grafana works for the same reason, via monitoring-egress). The fence is the
+  # loopback binding and the `admin` profile.
+  admin:
+
+volumes:
+  postgres-data:
+  synapse-data:
+  prometheus-data:
+  grafana-data:
