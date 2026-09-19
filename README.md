@@ -117,6 +117,8 @@ ssh -L 8008:localhost:8008 <server>
 
 Then give the client `http://localhost:8008` as the homeserver and log in with the admin account from *First deploy* step 5. The public URL will not work for this: the gateway does not route `/_synapse/admin`.
 
+**Server notices.** `POST /_synapse/admin/v1/send_server_notice` with `{"user_id": "@<user>:zuno.chat", "content": {"msgtype": "m.text", "body": "<text>"}}` messages one user from `@notices:zuno.chat`, in a room Synapse creates on the first notice and joins the user to. There is no broadcast: send one request per user. To give that room and its sender the logo, run `scripts/notice-avatar.sh <image>` on the server (square PNG, JPEG, WebP or GIF, 2 MB at most; an SVG will not do). It uploads the image, protects it from media retention and prints an `mxc://` URI. Put the URI in `system_mxid_avatar_url` and `room_avatar_url` under `server_notices` in `synapse/homeserver.yaml` and `docker compose restart synapse`. Each user's room picks the logo up with the next notice sent to them.
+
 **What this exposes.** Anything running on the server can reach Synapse's client and admin APIs at `127.0.0.1:8008` directly, bypassing the gateway and Cloudflare. Synapse's own auth and rate limits still apply; the edge protections do not. Nothing is reachable from off-host — `scripts/smoke-test.sh public` checks that the admin API is not public. An admin login can deactivate users, reset passwords and delete rooms and media, so never publish this port on a public interface.
 
 ## Updating

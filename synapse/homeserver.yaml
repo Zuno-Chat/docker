@@ -298,9 +298,19 @@ media_retention:
 # ------------------------------------------------------------------------------
 # Server notices: messages to users from @notices:zuno.chat, sent through the
 # admin API (POST /_synapse/admin/v1/send_server_notice). Notice rooms are
-# exempt from default encryption, and users cannot leave them.
+# exempt from default encryption. auto_join puts users straight into the room
+# instead of inviting them; an invite cannot be rejected, but a joined user can
+# leave, and the next notice then opens a new room.
+# Changes to the name, topic or avatars reach each existing room with the next
+# notice sent to its user, not at restart.
 # ------------------------------------------------------------------------------
 server_notices:
   system_mxid_localpart: notices
   system_mxid_display_name: Zuno
+  # The logo: scripts/notice-avatar.sh uploads it, protects it from media
+  # retention above and prints the URI for both avatar lines.
+  system_mxid_avatar_url: mxc://zuno.chat/SiqUxQslgYOkLXLLaBLJUgpE
   room_name: Zuno
+  room_avatar_url: mxc://zuno.chat/SiqUxQslgYOkLXLLaBLJUgpE
+  room_topic: Room used by your server admin to notice you of important information
+  auto_join: true
