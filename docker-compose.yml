@@ -6,8 +6,8 @@
 # Networks: `edge` has internet egress and holds everything that talks to
 # the gateway or the outside; `backend` is internal-only and holds the data
 # stores, so neither the gateway nor Sygnal can reach Postgres or Redis.
-# `monitoring` (internal) carries scrapes; only Grafana reaches out, through
-# `monitoring-egress`.
+# `monitoring` (internal) carries scrapes and Synapse's usage report to
+# synapse-usage-exporter; only Grafana reaches out, through `monitoring-egress`.
 #
 # Compose checks ${VAR:?} even in services whose profile is off, so the
 # monitoring profile's secrets use ${VAR:-} and are checked at container start.
@@ -236,10 +236,10 @@ services:
   synapse:
     container_name: zuno_synapse
     <<: *synapse
-    # Loopback only, for synapse-admin: the SPA runs in your browser, so the
-    # browser needs its own route to the admin API (README.md, Administration).
-    # Nothing outside this host can reach it; the public gateway still does not
-    # route /_synapse/admin.
+    # Loopback only, for an admin client on your own machine over an SSH tunnel:
+    # ssh -L 8008:localhost:8008 <server> (README.md, Administration). Nothing
+    # outside this host can reach it; the public gateway still does not route
+    # /_synapse/admin.
     ports: ["127.0.0.1:8008:8008"]
     command: run -m synapse.app.homeserver --config-path=/config/homeserver.yaml --config-path=/data/sentry.yaml
     healthcheck:
@@ -313,33 +313,6 @@ services:
       retries: 4
       start_period: 25s
 
-  # Synapse's admin UI (README.md, Administration). Stock nginx serving a static
-  # bundle and nothing else: the app talks to Synapse straight from your browser
-  # over the second SSH tunnel, so this container never reaches Synapse itself.
-  # It uses hash routing, so no try_files rewrite is needed either.
-  synapse-admin:
-    container_name: zuno_synapse-admin
-    image: awesometechnologies/synapse-admin:0.11.4
-    # An admin panel has no reason to run unless someone is using it.
-    profiles: ["admin"]
-    restart: unless-stopped
-    logging: *logging
-    # SSH tunnel only: ssh -L 8081:localhost:8081 <server>.
-    ports: ["127.0.0.1:8081:80"]
-    volumes:
-      # Pins the homeserver URL to the tunnelled Synapse, so the login screen
-      # has nothing to type. Both ports are fixed by this file.
-      - <<: *bind
-        source: ./synapse-admin/config.json
-        target: /usr/share/nginx/html/config.json
-    networks: [admin]
-    mem_limit: 32m
-    healthcheck:
-      test: ["CMD", "wget", "-qO/dev/null", "http://localhost/config.json"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
   # --- Monitoring: COMPOSE_PROFILES=push,monitoring (README.md, Monitoring) ---
 
   prometheus:
@@ -363,6 +336,37 @@ services:
       interval: 15s
       timeout: 5s
       retries: 4
+
+  # Usage totals: users, active users, rooms, messages. Synapse exports none of
+  # them as Prometheus metrics; it only PUTs them to report_stats_endpoint
+  # (homeserver.yaml), 5 minutes after synapse-background starts and then every
+  # 3 hours. This holds the latest report for Prometheus to scrape. It has no
+  # published port and sits on the internal monitoring network alone, so the
+  # totals stay on this host.
+  synapse-usage-exporter:
+    container_name: zuno_synapse-usage-exporter
+    <<: *monitoring
+    # One maintainer's Docker Hub image, amd64 only, last built 2023-12: the
+    # digest keeps the tag from changing underneath us.
+    image: loelkes/synapse-usage-exporter:0.1.0@sha256:1a6699e8b05249665e4dfc2a252dadaba068ed418a84eb230c8f42854ca8c5fc
+    # The image runs as root and writes nowhere but the directory below.
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # The app refuses to start without it.
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+    tmpfs:
+      - /tmp/prometheus
+    mem_limit: 96m
+    healthcheck:
+      # Python is the one HTTP client the image is sure to have.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/metrics', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   grafana:
     container_name: zuno_grafana
@@ -421,13 +425,6 @@ networks:
   monitoring:
     internal: true
   monitoring-egress:
-  # Holds synapse-admin alone, which talks to nothing: it exists only so the
-  # container has a network its port can be published on. Not internal, and it
-  # cannot be — Docker does not reach a published port over an internal-only
-  # network, so `internal: true` here makes 127.0.0.1:8081 refuse connections
-  # (Grafana works for the same reason, via monitoring-egress). The fence is the
-  # loopback binding and the `admin` profile.
-  admin:
 
 volumes:
   postgres-data:

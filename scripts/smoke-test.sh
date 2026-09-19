@@ -6,8 +6,8 @@
 #                                  user with an invite token, exercises it,
 #                                  then erases the user, room, media and token
 #   scripts/smoke-test.sh monitoring   on the server: Prometheus scrape targets
-#                                  and Grafana alert rules (no exporters, logs
-#                                  or error tracker run — README.md, Monitoring)
+#                                  and Grafana alert rules (no host exporters or
+#                                  logs, no error tracker — README.md, Monitoring)
 # Env: BASE_URL       default https://api.zuno.chat
 #      WELLKNOWN_URL  default https://zuno.chat/.well-known/matrix/client
 #      CURL_EXTRA     extra curl flags, e.g. for a local rehearsal:

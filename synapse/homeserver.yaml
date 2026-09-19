@@ -6,7 +6,19 @@
 server_name: "zuno.chat"
 public_baseurl: "https://api.zuno.chat/"
 
-report_stats: false
+# Usage totals (users, active users, rooms, messages): enable_metrics below
+# gives Prometheus operational numbers only, so these are pushed to
+# synapse-usage-exporter on this host (docker-compose.yml), by the background
+# worker, 5 minutes after it starts and then every 3 hours.
+# Keep the two lines together. report_stats alone falls back to Synapse's
+# default endpoint and sends the totals to matrix.org, which the privacy policy
+# rules out. The exporter runs only with the monitoring profile: without it the
+# push fails with a logged warning and nothing is sent anywhere, and if
+# monitoring stays off, set report_stats back to false.
+report_stats: true
+report_stats_endpoint: http://synapse-usage-exporter:5000/report-usage-stats/push
+
+default_room_version: '12'
 
 # ------------------------------------------------------------------------------
 # Listeners. Nothing here is published: the gateway is the only public edge.

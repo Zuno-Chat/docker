@@ -35,6 +35,13 @@ scrape_configs:
     static_configs:
       - targets: [gateway:9090]
 
+  # The latest usage report Synapse pushed (report_stats_endpoint in
+  # homeserver.yaml). The values change every 3 hours, and the synapse_usage_*
+  # series are absent from an exporter restart until the next report.
+  - job_name: synapse-usage
+    static_configs:
+      - targets: [synapse-usage-exporter:5000]
+
   - job_name: monitoring
     static_configs:
       - targets: [localhost:9090]
