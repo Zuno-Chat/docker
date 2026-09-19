@@ -199,7 +199,7 @@ password_config:
 session_lifetime: null
 refresh_token_lifetime: 365d
 refreshable_access_token_lifetime: 24h
-nonrefreshable_access_token_lifetime: 1m
+#nonrefreshable_access_token_lifetime: 1m
 
 # A device idle past refresh_token_lifetime can never sign in again. Deleting
 # it stops its to-device inbox (E2EE key traffic) growing forever.
