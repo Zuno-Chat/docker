@@ -126,6 +126,10 @@ services:
       TILES_CACHE_TTL: "${TILES_CACHE_TTL:-168h}"
       TILES_RATE_LIMIT_RPS: "${TILES_RATE_LIMIT_RPS:-10}"
       TILES_RATE_LIMIT_BURST: "${TILES_RATE_LIMIT_BURST:-60}"
+      # Ceiling on upstream tile fetches across every device. Empty uses the
+      # gateway's default; images that predate it ignore the variable.
+      TILES_UPSTREAM_RATE_LIMIT_RPS: "${TILES_UPSTREAM_RATE_LIMIT_RPS:-}"
+      TILES_UPSTREAM_RATE_LIMIT_BURST: "${TILES_UPSTREAM_RATE_LIMIT_BURST:-}"
 
       # Self-service registration (POST /register/token): the gateway mints a
       # Synapse registration token through /_synapse/admin/v1/registration_tokens
@@ -163,6 +167,13 @@ services:
       MAX_BODY_SIZE: "${MAX_BODY_SIZE:-100MB}"
       HSTS_MAX_AGE: "${HSTS_MAX_AGE:-0}"
       HSTS_INCLUDE_SUBDOMAINS: "${HSTS_INCLUDE_SUBDOMAINS:-false}"
+      # Slow-client fence: body deadline and connection limits. Empty uses the
+      # gateway's defaults; images that predate them ignore the variables. The
+      # per-IP limit never counts TRUSTED_PROXY_CIDRS peers, which is every
+      # connection that arrives through Cloudflare.
+      BODY_READ_TIMEOUT: "${BODY_READ_TIMEOUT:-}"
+      MAX_CONNS_PER_IP: "${MAX_CONNS_PER_IP:-}"
+      MAX_CONNS: "${MAX_CONNS:-}"
 
       # Upstream connection reuse and shutdown. Empty uses the gateway's
       # defaults; stop_grace_period above should stay above SHUTDOWN_GRACE_PERIOD.
