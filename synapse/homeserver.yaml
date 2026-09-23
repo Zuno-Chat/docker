@@ -201,6 +201,14 @@ refresh_token_lifetime: 365d
 refreshable_access_token_lifetime: 24h
 #nonrefreshable_access_token_lifetime: 1m
 
+# MSC3882: a signed-in device can mint a short-lived token that signs in
+# another device (POST /_matrix/client/v1/login/get_token). The password is
+# asked again first (UIA); the token lives 5 minutes and works once.
+login_via_existing_session:
+  enabled: true
+  require_ui_auth: true
+  token_timeout: 5m
+
 # A device idle past refresh_token_lifetime can never sign in again. Deleting
 # it stops its to-device inbox (E2EE key traffic) growing forever.
 delete_stale_devices_after: 365d
