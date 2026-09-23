@@ -16,6 +16,12 @@ fi
 chmod 644 /data/sentry.yaml
 
 mkdir -p /data/secrets /data/media
+
+# The zuno_calls block in homeserver.yaml reads these two. Rewritten on every
+# start: .env is the source of truth. Unset stops here, before Synapse starts.
+printf '%s' "${CF_CALLS_APP_SECRET:?set in .env}" > /data/secrets/cf_calls_app_secret
+printf '%s' "${CF_TURN_API_TOKEN:?set in .env}" > /data/secrets/cf_turn_api_token
+
 for name in macaroon_secret_key form_secret registration_shared_secret worker_replication_secret; do
   f="/data/secrets/$name"
   # No trailing newline: Synapse reads these files verbatim.

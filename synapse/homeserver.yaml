@@ -322,3 +322,32 @@ server_notices:
   room_avatar_url: mxc://zuno.chat/SiqUxQslgYOkLXLLaBLJUgpE
   room_topic: Room used by your server admin to notice you of important information
   auto_join: true
+
+# ------------------------------------------------------------------------------
+# Calls: the zuno_calls module (docs/design.md in the zuno_calls repo). Proxies
+# Cloudflare Calls signaling and mints TURN credentials under
+# /_synapse/client/zuno/calls/cloudflare/, behind Synapse's own token check.
+# Only the zuno-synapse image (synapse/Dockerfile) can import it; the official
+# image crash-loops on this block. Every worker loads it too, but the gateway
+# routes these paths to main alone.
+# app_id and turn_key_id are identifiers, not secrets, and must match .env's
+# CF_CALLS_APP_ID and CF_TURN_KEY_ID, which the gateway reads. Empty values
+# fail config parsing, so Synapse refuses to start until both are set. The two
+# secrets are files bootstrap.sh writes from .env on every start.
+# ------------------------------------------------------------------------------
+modules:
+  - module: zuno_calls.ZunoCalls
+    config:
+      cloudflare:
+        app_id: "d58eb20e93987d6ed60c97b464afc920"
+        app_secret_path: /data/secrets/cf_calls_app_secret
+        turn_key_id: "2dbf23ed38919bdd2e2724ed8e54022f"
+        turn_api_token_path: /data/secrets/cf_turn_api_token
+        # Matches the gateway's CF_TURN_CRED_TTL.
+        turn_credential_ttl: 2h
+        timeout: 10s
+        turn_timeout: 5s
+      # Per (user, device), per Synapse process.
+      rate_limit:
+        per_second: 5
+        burst: 10

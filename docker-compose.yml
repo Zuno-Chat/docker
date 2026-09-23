@@ -1,5 +1,6 @@
-# Zuno server: Cloudflare -> gateway (TLS, public edge) -> Synapse main + sync
-# worker + background worker, over Postgres and Redis; Sygnal for push.
+# Zuno server: Cloudflare -> gateway (TLS, public edge) -> Synapse main (with
+# the zuno_calls module) + sync worker + background worker, over Postgres and
+# Redis; Sygnal for push.
 # Per-host values and secrets: .env (from .env.example). Sizing and scaling
 # steps: README.md.
 #
@@ -35,6 +36,9 @@ x-bind: &bind
     create_host_path: false
 
 x-synapse: &synapse
+  # Must be the zuno-synapse build (.github/workflows/synapse-image.yml, pinned
+  # by sha- tag): homeserver.yaml loads zuno_calls, which the official image
+  # cannot import.
   image: ghcr.io/element-hq/synapse:v1.161.0
   restart: unless-stopped
   logging: *logging
@@ -45,6 +49,10 @@ x-synapse: &synapse
     # bootstrap.sh writes it to /data/sentry.yaml. Shared by every Synapse
     # service so that changing it recreates them all.
     SYNAPSE_SENTRY_DSN: "${SYNAPSE_SENTRY_DSN:-}"
+    # bootstrap.sh writes these to /data/secrets for zuno_calls. On every
+    # Synapse service so a change in .env recreates them all.
+    CF_CALLS_APP_SECRET: "${CF_CALLS_APP_SECRET:-}"
+    CF_TURN_API_TOKEN: "${CF_TURN_API_TOKEN:-}"
   volumes:
     - <<: *bind
       source: ./synapse

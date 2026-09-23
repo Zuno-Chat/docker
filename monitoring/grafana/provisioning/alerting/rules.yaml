@@ -3,7 +3,8 @@
 # Their folder is not "Zuno": Grafana would create a second folder by that name
 # beside the dashboards'.
 #
-# Every rule reads Prometheus, which scrapes only Synapse and Sygnal: there are
+# Every rule reads Prometheus, which scrapes only Synapse (the zuno_calls
+# module included) and Sygnal: there are
 # no exporters, so nothing here covers the host, Postgres, Redis or the public
 # endpoint (README.md, Monitoring).
 #
@@ -95,3 +96,24 @@ groups:
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+      # The zuno_calls module could not get a response from Cloudflare in every
+      # 5-minute window for 15 minutes: calls cannot be set up. Only its own
+      # series, so nothing fires before the first call.
+      - uid: calls-upstream-failing
+        title: Cloudflare Calls unreachable
+        condition: C
+        for: 15m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          summary: "The calls module has been failing to reach Cloudflare ({{ $labels.api }}) for 15 minutes."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 900, to: 0}
+            model: {refId: A, instant: true, expr: 'sum by (api) (rate(zuno_calls_upstream_errors_total{reason=~"timeout|connect"}[5m]))'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}

@@ -3,7 +3,7 @@
 Single source of truth for the production stack. One host, Docker Compose, Cloudflare in front.
 
 ```
-client ─▶ Cloudflare ─▶ gateway:443 ─┬─▶ synapse:8008 (main: everything but sync)
+client ─▶ Cloudflare ─▶ gateway:443 ─┬─▶ synapse:8008 (main: everything but sync; zuno_calls module at /_synapse/client/zuno/calls/)
                                      └─▶ synapse-sync:8083 (/sync, /events, /initialSync)
 synapse-background: background jobs, user directory, push delivery ─▶ gateway ─▶ sygnal ─▶ FCM
 postgres, redis: backend network only (no internet, unreachable from gateway and sygnal)
@@ -15,6 +15,7 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 | Path | What |
 |---|---|
 | `docker-compose.yml` | All services, pinned image versions, networks, log rotation |
+| `synapse/Dockerfile` | The Synapse image: official release plus Zuno's modules, built by `.github/workflows/synapse-image.yml`. Each module's CI publishes its wheel as `ghcr.io/zuno-chat/<module>-wheel:<tag>` on a `v*` tag; bump that tag in the Dockerfile, push, then pin the new `sha-` tag in `docker-compose.yml`. `homeserver.yaml` loads the module, so the official image no longer starts |
 | `.env` (from `.env.example`) | Secrets and per-host values. Not in git |
 | `synapse/` | `homeserver.yaml` (shared), `workers/*.yaml`, `log.yaml`, `bootstrap.sh` |
 | `postgres/postgresql.conf`, `redis/redis.conf`, `sygnal/sygnal.yaml` | Service configs |
@@ -33,13 +34,14 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
    sudo chgrp 65532 ssl/cf_origin_key.key && chmod 640 ssl/cf_origin_key.key   # gateway runs as uid/gid 65532
    ```
    Everything else stays world-readable (644): Synapse, Postgres and Redis read their configs as their own users.
-4. **Start.** `docker compose config -q && docker compose pull && docker compose up -d --wait`. The first start runs Synapse's schema migration.
-5. **Once.**
+4. **Synapse image.** One-time: push the `v*` tag that `synapse/Dockerfile` names to zuno_calls, whose CI publishes `ghcr.io/zuno-chat/zuno-calls-wheel`. In that package's settings, *Manage Actions access*, add this repo with the *Read* role, so the workflow's own `GITHUB_TOKEN` can pull it. Run `.github/workflows/synapse-image.yml`, then pin the `sha-` tag it pushes in `x-synapse.image`. Fill in `app_id` and `turn_key_id` in the `modules:` block at the end of `synapse/homeserver.yaml`, the same values as `CF_CALLS_APP_ID` and `CF_TURN_KEY_ID` in `.env`: Synapse refuses to start while they are empty. The server needs `docker login ghcr.io` with a token that has `read:packages` if the image is private.
+5. **Start.** `docker compose config -q && docker compose pull && docker compose up -d --wait`. The first start runs Synapse's schema migration.
+6. **Once.**
    ```sh
    docker compose exec postgres psql -U synapse -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;'
    docker compose exec synapse register_new_matrix_user -c /config/homeserver.yaml --admin http://localhost:8008
    ```
-6. **Verify.** `scripts/smoke-test.sh full` on the server, `scripts/smoke-test.sh public` from your laptop. Both must report 0 failures.
+7. **Verify.** `scripts/smoke-test.sh full` on the server, `scripts/smoke-test.sh public` from your laptop. Both must report 0 failures.
 
 **Invite tokens:** `scripts/invite.sh [uses] [valid-days]` on the server (defaults: 1 use, 7 days). It prompts for the admin login; the gateway does not expose `/_synapse/admin`.
 
@@ -88,14 +90,14 @@ Optional, on the same host: add `monitoring` to `COMPOSE_PROFILES`. Three contai
 
 **Usage totals, and nothing leaves the host.** Synapse's Prometheus metrics are operational only. Usage totals (accounts, active users, rooms, messages) exist solely as the report Synapse pushes to `report_stats_endpoint`, which defaults to matrix.org. `homeserver.yaml` points it at [synapse-usage-exporter](https://github.com/loelkes/synapse-usage-exporter) instead: the background worker PUTs the totals to it over the internal `monitoring` network, 5 minutes after it starts and then every 3 hours, and Prometheus scrapes the latest report for the *Zuno usage* dashboard. The privacy policy promises no analytics and names every third party: these are aggregate counts with no user or room identifiers, and no third party receives them. Keep `report_stats: true` and `report_stats_endpoint` together — without the endpoint line the totals go to matrix.org. If a stats or metrics destination outside this host is ever added, the privacy policy has to name it first.
 
-**What is not covered.** There are no host or database exporters, no log collection and no error tracker, so nothing watches the host (disk, memory, swap, OOM kills), Postgres, Redis, or the public URL, and no alert can fire on any of them. Logs live only in Docker's rotated files: read them with `docker compose logs`, not in Grafana. Four alert rules exist — Synapse process down, Synapse CPU saturated, push deliveries failing, Sygnal down.
+**What is not covered.** There are no host or database exporters, no log collection and no error tracker, so nothing watches the host (disk, memory, swap, OOM kills), Postgres, Redis, or the public URL, and no alert can fire on any of them. Logs live only in Docker's rotated files: read them with `docker compose logs`, not in Grafana. Five alert rules exist — Synapse process down, Synapse CPU saturated, push deliveries failing, Sygnal down, Cloudflare Calls unreachable.
 
 **Enable**, with the base stack running:
 1. `.env`: fill in the Monitoring block from `.env.example`, and `COMPOSE_PROFILES=push,monitoring`.
 2. `docker compose up -d --wait`.
 3. `scripts/smoke-test.sh monitoring`: must report 0 failures, except the `gateway` scrape target while it is still down (below). In Grafana, *Alerting* > *Contact points* > *ntfy-urgent* > *Test* must reach your phone.
 
-**Changing things.** Dashboards and alert rules are files in `monitoring/grafana/`; Grafana refuses UI edits to them. Edit the file, then `docker compose restart grafana`. The Synapse dashboard and rules come from Synapse's `contrib/` at the pinned version; *Zuno overview*, *Zuno gateway*, *Zuno Sygnal* and *Zuno usage* are written here, against the metric names those services actually export.
+**Changing things.** Dashboards and alert rules are files in `monitoring/grafana/`; Grafana refuses UI edits to them. Edit the file, then `docker compose restart grafana`. The Synapse dashboard and rules come from Synapse's `contrib/` at the pinned version; *Zuno overview*, *Zuno gateway*, *Zuno calls*, *Zuno Sygnal* and *Zuno usage* are written here, against the metric names those services actually export.
 
 **Limits.**
 - Nothing pages if the host itself or Grafana is down, and nothing probes the public URL from outside: the outside uptime check in *Before launch* is not optional.
@@ -103,6 +105,7 @@ Optional, on the same host: add `monitoring` to `COMPOSE_PROFILES`. Three contai
 - Not backed up: Prometheus data. Grafana's dashboards and rules are the files above.
 - Usage totals move once per report, so *Zuno usage* steps every 3 hours. The exporter keeps them in memory: after it restarts the dashboard reads *No data* until the next report, up to 3 hours later (5 minutes if `synapse-background` restarted too). The *Last report* tile shows their age. No alert watches them.
 - With the monitoring profile off the exporter is not running, and `synapse-background` logs `Error reporting stats` every 3 hours. If monitoring stays off, set `report_stats: false` in `homeserver.yaml`.
+- *Zuno calls* reads *No data* until the app has placed a call: the module's own series and Synapse's per-servlet ones exist only once a request has been served. Its alert matches only those series, so it stays silent until then.
 - The `gateway` scrape target reports **down** until an image exposing `METRICS_LISTEN_ADDR` is deployed, so `scripts/smoke-test.sh monitoring` fails on it and the *Zuno gateway* dashboard reads *No data* until then. No alert fires on it — the rules match only `job=~"master|generic_worker"` and `job="sygnal"`.
 
 **Adding a piece back.** Each removed service was self-contained: a container in `docker-compose.yml`, a scrape job in `monitoring/prometheus/prometheus.yml`, and its alert rules in `monitoring/grafana/provisioning/alerting/rules.yaml`. node-exporter is the highest value of them — 64 MB, and it alone restores disk, swap, OOM-kill and backup-overdue alerting.
@@ -115,7 +118,7 @@ No admin UI runs in this stack. The `synapse` service publishes its client port 
 ssh -L 8008:localhost:8008 <server>
 ```
 
-Then give the client `http://localhost:8008` as the homeserver and log in with the admin account from *First deploy* step 5. The public URL will not work for this: the gateway does not route `/_synapse/admin`.
+Then give the client `http://localhost:8008` as the homeserver and log in with the admin account from *First deploy* step 6. The public URL will not work for this: the gateway does not route `/_synapse/admin`.
 
 **Server notices.** `POST /_synapse/admin/v1/send_server_notice` with `{"user_id": "@<user>:zuno.chat", "content": {"msgtype": "m.text", "body": "<text>"}}` messages one user from `@notices:zuno.chat`, in a room Synapse creates on the first notice and joins the user to. There is no broadcast: send one request per user. To give that room and its sender the logo, run `scripts/notice-avatar.sh <image>` on the server (square PNG, JPEG, WebP or GIF, 2 MB at most; an SVG will not do). It uploads the image, protects it from media retention and prints an `mxc://` URI. Put the URI in `system_mxid_avatar_url` and `room_avatar_url` under `server_notices` in `synapse/homeserver.yaml` and `docker compose restart synapse`. Each user's room picks the logo up with the next notice sent to them.
 
@@ -123,7 +126,7 @@ Then give the client `http://localhost:8008` as the homeserver and log in with t
 
 ## Updating
 
-Every image is pinned in `docker-compose.yml`; nothing changes on `pull` until a tag is edited. The gateway uses CI's `sha-<commit>` tags, never `latest`. Synapse's tag lives once, in `x-synapse`; read the release's upgrade notes first. Then: back up, `docker compose pull && docker compose up -d --wait`, `scripts/smoke-test.sh full` (and `monitoring` if enabled).
+Every image is pinned in `docker-compose.yml`; nothing changes on `pull` until a tag is edited. The gateway uses CI's `sha-<commit>` tags, never `latest`. Synapse's version lives in `synapse/Dockerfile`'s `FROM`: read the release's upgrade notes, bump it (and in the `zuno_calls` repo, its dev `Twisted` and `matrix-synapse` pins and `tests/e2e/Dockerfile`'s `FROM`), push, let `.github/workflows/synapse-image.yml` build, then pin the new `sha-` tag in `x-synapse.image`. Then: back up, `docker compose pull && docker compose up -d --wait`, `scripts/smoke-test.sh full` (and `monitoring` if enabled).
 
 With monitoring on, follow a Synapse or Postgres upgrade with `docker compose restart synapse-usage-exporter`. It labels every series with both versions and keeps the old series beside the new ones until it restarts, which makes *Zuno usage* read stale numbers.
 
