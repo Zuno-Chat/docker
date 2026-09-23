@@ -21,12 +21,12 @@ report_stats_endpoint: http://synapse-usage-exporter:5000/report-usage-stats/pus
 default_room_version: '12'
 
 # ------------------------------------------------------------------------------
-# Listeners. Nothing here is published: the gateway is the only public edge.
+# Listeners. Nothing here is published: nginx is the only public edge.
 # ------------------------------------------------------------------------------
 listeners:
-  # Client API, including media and /_synapse/admin. x_forwarded: the gateway
-  # sets X-Forwarded-For, so per-IP rate limits and "last seen" use the real
-  # client instead of the gateway.
+  # Client API, including media and /_synapse/admin. x_forwarded: nginx sets
+  # X-Forwarded-For to the client's address, so per-IP rate limits and "last
+  # seen" use the real client instead of nginx.
   - port: 8008
     type: http
     x_forwarded: true
@@ -78,7 +78,7 @@ registration_shared_secret_path: /data/secrets/registration_shared_secret
 worker_replication_secret_path: /data/secrets/worker_replication_secret
 
 # ------------------------------------------------------------------------------
-# Workers. The gateway routes /sync, /events and /initialSync to sync_worker;
+# Workers. nginx routes /sync, /events and /initialSync to sync_worker;
 # everything else reaches main. Single-instance duties move off main here and
 # must never be assigned to two processes.
 # ------------------------------------------------------------------------------
@@ -117,8 +117,8 @@ caches:
 event_cache_size: 20K
 
 # ------------------------------------------------------------------------------
-# Rate limiting. Per-IP limits rely on x_forwarded above and on the gateway's
-# TRUSTED_PROXY_CIDRS; per-user limits do not.
+# Rate limiting. Per-IP limits rely on x_forwarded above and on nginx trusting
+# Cloudflare's ranges (nginx/cloudflare.conf); per-user limits do not.
 # ------------------------------------------------------------------------------
 rc_message:
   per_second: 0.5
@@ -172,9 +172,11 @@ rc_third_party_invite:
   burst_count: 10
 
 # ------------------------------------------------------------------------------
-# Registration: invite tokens only. Tokens are rows created per invite through
+# Registration: tokens only, from two sources. Invites are rows created through
 # the admin API (POST /_synapse/admin/v1/registration_tokens/new with
-# uses_allowed and expiry_time in epoch ms); there is no static token.
+# uses_allowed and expiry_time in epoch ms; scripts/invite.sh), and
+# zuno_register (modules, below) emails a single-use one to whoever asks. There
+# is no static token.
 # No 3PID is collected, so there is no self-service password reset.
 # ------------------------------------------------------------------------------
 enable_registration: true
@@ -251,7 +253,7 @@ push:
   include_content: false
 
 # ------------------------------------------------------------------------------
-# Media. Matches the gateway's MAX_BODY_SIZE and Cloudflare's 100 MB request
+# Media. Matches nginx's client_max_body_size and Cloudflare's 100 MB request
 # body limit (Free/Pro plans).
 # ------------------------------------------------------------------------------
 max_upload_size: 100M
@@ -266,7 +268,7 @@ max_avatar_size: 2M
 allowed_avatar_mimetypes: [image/png, image/jpeg, image/webp, image/gif]
 
 # ------------------------------------------------------------------------------
-# Federation: off. The gateway already rejects federation paths; the empty
+# Federation: off. nginx already rejects federation paths; the empty
 # whitelist also stops outbound federation, and no key server is ever asked.
 # ------------------------------------------------------------------------------
 federation_domain_whitelist: []
@@ -324,18 +326,17 @@ server_notices:
   auto_join: true
 
 # ------------------------------------------------------------------------------
-# Calls: the zuno_calls module (docs/design.md in the zuno_calls repo). Proxies
-# Cloudflare Calls signaling and mints TURN credentials under
-# /_synapse/client/zuno/calls/cloudflare/, behind Synapse's own token check.
-# Only the zuno-synapse image (synapse/Dockerfile) can import it; the official
-# image crash-loops on this block. Every worker loads it too, but the gateway
-# routes these paths to main alone.
-# app_id and turn_key_id are identifiers, not secrets, and must match .env's
-# CF_CALLS_APP_ID and CF_TURN_KEY_ID, which the gateway reads. Empty values
-# fail config parsing, so Synapse refuses to start until both are set. The two
-# secrets are files bootstrap.sh writes from .env on every start.
+# Modules. Only the zuno-synapse image (synapse/Dockerfile) can import them; the
+# official image crash-loops on this block. Every worker loads them too, but
+# nginx routes /_synapse/client/ to main alone. Their secrets are files
+# bootstrap.sh writes from .env on every start.
 # ------------------------------------------------------------------------------
 modules:
+  # Calls (docs/design.md in the zuno_calls repo): proxies Cloudflare Calls
+  # signaling and mints TURN credentials under
+  # /_synapse/client/zuno/calls/cloudflare/, behind Synapse's own token check.
+  # app_id and turn_key_id are identifiers, not secrets. Empty values fail
+  # config parsing, so Synapse refuses to start until both are set.
   - module: zuno_calls.ZunoCalls
     config:
       cloudflare:
@@ -343,7 +344,6 @@ modules:
         app_secret_path: /data/secrets/cf_calls_app_secret
         turn_key_id: "2dbf23ed38919bdd2e2724ed8e54022f"
         turn_api_token_path: /data/secrets/cf_turn_api_token
-        # Matches the gateway's CF_TURN_CRED_TTL.
         turn_credential_ttl: 2h
         timeout: 10s
         turn_timeout: 5s
@@ -351,3 +351,28 @@ modules:
       rate_limit:
         per_second: 5
         burst: 10
+
+  # Signup by emailed code (docs/design.md in the zuno_register repo):
+  # POST /_synapse/client/zuno/register/token mints a single-use registration
+  # token and emails it through Brevo. Without the brevo section the module
+  # registers nothing (the route answers 404); an empty BREVO_API_KEY stops
+  # synapse-init, so Synapse does not start.
+  - module: zuno_register.ZunoRegister
+    config:
+      brevo:
+        api_key_path: /data/secrets/brevo_api_key
+        # Must be an address Brevo has verified for zuno.chat.
+        sender_email: noreply@zuno.chat
+      # token_ttl stays at its default, 24h: the app tells users the code
+      # "expires in 24 hours".
+      # Mails per UTC day across every caller. The control that protects the
+      # Brevo bill and the sender's reputation: someone varying the address and
+      # the IP gets past every other limit. Raise it deliberately for a launch.
+      daily_cap: 100
+      # Per IP. A day of it, burst included, must stay under daily_cap or
+      # Synapse refuses to start, so it sits below the module's default (one
+      # per 10 min): one per ~17 min, 89 a day. Carrier NAT puts many real
+      # users behind one address, so keep it no tighter than the cap forces.
+      rate_limit:
+        per_second: 0.001
+        burst: 3

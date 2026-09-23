@@ -1,10 +1,10 @@
-# Serves /sync, /events and /initialSync: the gateway sends them here
-# (SYNAPSE_SYNC_URL), keeping long-polls off the main process.
+# Serves /sync, /events and /initialSync: nginx sends them here
+# (nginx/nginx.conf), keeping long-polls off the main process.
 worker_app: synapse.app.generic_worker
 worker_name: sync_worker
 worker_log_config: /config/log.yaml
 
-# The gateway sends no media here. Loading the media repo anyway would run the
+# nginx sends no media here. Loading the media repo anyway would run the
 # hourly media_retention purge a second time, alongside main.
 enable_media_repo: false
 

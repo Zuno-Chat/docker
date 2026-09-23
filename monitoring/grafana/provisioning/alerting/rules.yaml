@@ -69,7 +69,7 @@ groups:
         execErrState: Alerting
         labels: {severity: warning}
         annotations:
-          summary: "Synapse has been failing to deliver pushes to the gateway for 15 minutes."
+          summary: "Synapse has been failing to deliver pushes to Sygnal for 15 minutes."
         data:
           - refId: A
             datasourceUid: prometheus

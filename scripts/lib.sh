@@ -1,5 +1,5 @@
 # Shared by scripts/*.sh, sourced from the repo root. Admin calls run inside
-# the synapse container: the gateway does not expose /_synapse/admin.
+# the synapse container: nginx refuses /_synapse/admin.
 
 # json <key>: prints one top-level field of the JSON on stdin; "" if absent.
 json() {

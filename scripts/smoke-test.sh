@@ -58,6 +58,13 @@ expect "federation blocked" 403 "$(code "$BASE_URL/_matrix/federation/v1/version
 expect "admin API not public" 403 "$(code "$BASE_URL/_synapse/admin/v1/server_version")"
 expect "calls module reachable" 401 \
   "$(code -X POST "$BASE_URL/_synapse/client/zuno/calls/cloudflare/turn/credentials")"
+# No address: refused before the rate limits count it, so no mail and no spend.
+expect "signup module reachable" 400 \
+  "$(code -X POST -H 'Content-Type: application/json' -d '{}' "$BASE_URL/_synapse/client/zuno/register/token")"
+# One tile, billed by MapTiler like any other.
+expect "map tiles served to the app" "200 image/png" \
+  "$(pub -A 'Zuno/smoke-test (im.zuno.chat)' -o /dev/null -w '%{http_code} %{content_type}' "$BASE_URL/maps/0/0/0")"
+expect "map tiles refused to other clients" 403 "$(code "$BASE_URL/maps/0/0/0")"
 case $(pub -X POST "$BASE_URL/_matrix/client/v3/register" -d '{}') in
   *m.login.registration_token*) pass "registration requires an invite token" ;;
   *) fail "registration requires an invite token" ;;

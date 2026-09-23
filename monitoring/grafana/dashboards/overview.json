@@ -117,7 +117,7 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Push deliveries to the gateway",
+      "title": "Push deliveries to Sygnal",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

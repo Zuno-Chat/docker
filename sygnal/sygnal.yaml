@@ -1,4 +1,4 @@
-# Sygnal: Synapse -> gateway (POST /_matrix/push/v1/notify) -> here -> FCM.
+# Sygnal: Synapse -> nginx (POST /_matrix/push/v1/notify) -> here -> FCM.
 # Credentials sit next to this file, mounted read-only at /sygnal; never
 # commit them.
 
@@ -23,7 +23,7 @@ log:
       level: INFO
     disable_existing_loggers: false
   access:
-    # Only the gateway connects, and it sets X-Forwarded-For.
+    # Only nginx connects, and it sets X-Forwarded-For.
     x_forwarded_for: true
 
 http:
@@ -36,11 +36,6 @@ metrics:
     # Compose network only; never publish.
     address: '0.0.0.0'
     port: 8000
-  # dsn null: the Sentry SDK reads SENTRY_DSN (SYGNAL_SENTRY_DSN in .env);
-  # empty sends nothing.
-  sentry:
-    enabled: true
-    dsn: null
 
 apps:
   # Must match the app_id the client registers its pusher with.

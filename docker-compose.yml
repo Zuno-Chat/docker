@@ -1,12 +1,12 @@
-# Zuno server: Cloudflare -> gateway (TLS, public edge) -> Synapse main (with
-# the zuno_calls module) + sync worker + background worker, over Postgres and
-# Redis; Sygnal for push.
+# Zuno server: Cloudflare -> nginx (TLS, public edge) -> Synapse main (with
+# the zuno_calls and zuno_register modules) + sync worker + background worker,
+# over Postgres and Redis; Sygnal for push.
 # Per-host values and secrets: .env (from .env.example). Sizing and scaling
 # steps: README.md.
 #
 # Networks: `edge` has internet egress and holds everything that talks to
-# the gateway or the outside; `backend` is internal-only and holds the data
-# stores, so neither the gateway nor Sygnal can reach Postgres or Redis.
+# nginx or the outside; `backend` is internal-only and holds the data
+# stores, so neither nginx nor Sygnal can reach Postgres or Redis.
 # `monitoring` (internal) carries scrapes and Synapse's usage report to
 # synapse-usage-exporter; only Grafana reaches out, through `monitoring-egress`.
 #
@@ -36,23 +36,23 @@ x-bind: &bind
     create_host_path: false
 
 x-synapse: &synapse
-  # Must be the zuno-synapse build (.github/workflows/synapse-image.yml, pinned
-  # by sha- tag): homeserver.yaml loads zuno_calls, which the official image
-  # cannot import.
-  image: ghcr.io/element-hq/synapse:v1.161.0
+  # The zuno-synapse build (.github/workflows/synapse-image.yml):
+  # homeserver.yaml loads zuno_calls and zuno_register, which the official
+  # image cannot import. latest is the newest master build; to hold or roll
+  # back, pin one of its sha-<commit> tags instead.
+  image: ghcr.io/zuno-chat/zuno-synapse:latest
   restart: unless-stopped
   logging: *logging
   stop_grace_period: 30s
   environment:
     # homeserver.yaml has no database password; libpq reads this instead.
     PGPASSWORD: "${POSTGRES_PASSWORD:?set in .env}"
-    # bootstrap.sh writes it to /data/sentry.yaml. Shared by every Synapse
-    # service so that changing it recreates them all.
-    SYNAPSE_SENTRY_DSN: "${SYNAPSE_SENTRY_DSN:-}"
-    # bootstrap.sh writes these to /data/secrets for zuno_calls. On every
-    # Synapse service so a change in .env recreates them all.
+    # bootstrap.sh writes these to /data/secrets for zuno_calls and
+    # zuno_register. On every Synapse service so a change in .env recreates
+    # them all.
     CF_CALLS_APP_SECRET: "${CF_CALLS_APP_SECRET:-}"
     CF_TURN_API_TOKEN: "${CF_TURN_API_TOKEN:-}"
+    BREVO_API_KEY: "${BREVO_API_KEY:-}"
   volumes:
     - <<: *bind
       source: ./synapse
@@ -78,116 +78,58 @@ x-monitoring: &monitoring
   networks: [monitoring]
 
 services:
-  gateway:
-    container_name: zuno_gateway
-    # CI tags every build sha-<commit>; never deploy latest.
-    image: ghcr.io/zuno-chat/zuno-gateway:sha-6672a5c
+  nginx:
+    container_name: zuno_nginx
+    # The stock image: nginx/nginx.conf is the whole edge (README.md).
+    image: nginx:1.30.5-alpine
     restart: unless-stopped
     logging: *logging
-    # Lets in-flight /sync long-polls (30s) finish on redeploy.
+    # Lets in-flight /sync long-polls (30s) finish on redeploy: nginx stops on
+    # SIGQUIT and drains for worker_shutdown_timeout (35s, nginx.conf).
     stop_grace_period: 40s
+    command: ["nginx", "-c", "/etc/nginx/zuno/nginx.conf", "-g", "daemon off;"]
     ports:
-      - "443:8080"
+      - "443:443"
+    # Room for worker_connections (nginx.conf) above Docker's default of 1024:
+    # each proxied connection is two open files.
+    ulimits:
+      nofile: 65536
+    # Backs listen backlog=8192 (nginx.conf): the kernel silently caps a
+    # listen backlog at somaxconn. Both are per network namespace, so set
+    # here, not on the host.
+    sysctls:
+      net.core.somaxconn: 8192
+      net.ipv4.tcp_max_syn_backlog: 8192
+    environment:
+      # push-allow.sh turns it into the push route's allow list.
+      PUSHER_ALLOWED_CIDRS: "${PUSHER_ALLOWED_CIDRS:?set in .env: this server's public IPs}"
+      # maptiler-key.sh hands it to the /maps/ route.
+      MAPTILER_API_KEY: "${MAPTILER_API_KEY:?set in .env: MapTiler API key}"
     volumes:
-      # Cloudflare Origin CA cert for *.zuno.chat. The image runs as nonroot
-      # (uid 65532), which must be able to read the key: see README.md.
+      # A directory, not single files: an edit shows up in the container, so
+      # a reload picks it up (nginx.conf's header).
+      - <<: *bind
+        source: ./nginx
+        target: /etc/nginx/zuno
+      # The image runs every /docker-entrypoint.d/*.sh before nginx starts.
+      - <<: *bind
+        source: ./nginx/push-allow.sh
+        target: /docker-entrypoint.d/40-push-allow.sh
+      - <<: *bind
+        source: ./nginx/maptiler-key.sh
+        target: /docker-entrypoint.d/41-maptiler-key.sh
+      # Cloudflare Origin CA cert and key for *.zuno.chat. nginx's master
+      # process reads them as root.
       - <<: *bind
         source: ./ssl
         target: /certs
-    # monitoring carries nothing but Prometheus's scrape of the port below.
-    networks: [edge, monitoring]
-    environment:
-      LISTEN_ADDR: ":8080"
-      # Second listener, never published: serves only GET /metrics, reachable
-      # from the monitoring network. Empty disables metrics entirely.
-      METRICS_LISTEN_ADDR: ":9090"
-      TLS_CERT_FILE: /certs/cf_origin_cert.pem
-      TLS_KEY_FILE: /certs/cf_origin_key.key
-
-      SYNAPSE_BASE_URL: "http://synapse:8008"
-      SYNAPSE_SYNC_URL: "http://synapse-sync:8083"
-
-      CF_CALLS_ENABLED: "${CF_CALLS_ENABLED:-true}"
-      CF_CALLS_APP_ID: "${CF_CALLS_APP_ID:-}"
-      CF_CALLS_APP_SECRET: "${CF_CALLS_APP_SECRET:-}"
-      CF_CALLS_BASE_URL: "https://rtc.live.cloudflare.com"
-
-      CF_TURN_ENABLED: "${CF_TURN_ENABLED:-true}"
-      CF_TURN_KEY_ID: "${CF_TURN_KEY_ID:-}"
-      CF_TURN_API_TOKEN: "${CF_TURN_API_TOKEN:-}"
-      CF_TURN_BASE_URL: "https://rtc.live.cloudflare.com/v1/turn/keys"
-      CF_TURN_CRED_TTL: "${CF_TURN_CRED_TTL:-2h}"
-
-      PUSHER_ENABLED: "${PUSHER_ENABLED:-true}"
-      PUSHER_BASE_URL: "http://sygnal:5000"
-      PUSHER_ALLOWED_CIDRS: "${PUSHER_ALLOWED_CIDRS:?set in .env: this server's public IPs}"
-      PUSHER_RATE_LIMIT_RPS: "${PUSHER_RATE_LIMIT_RPS:-50}"
-      PUSHER_RATE_LIMIT_BURST: "${PUSHER_RATE_LIMIT_BURST:-200}"
-
-      RATE_LIMIT_RPS: "5"
-      RATE_LIMIT_BURST: "10"
-
-      TILES_ENABLED: "${TILES_ENABLED:-true}"
-      TILES_UPSTREAM_URL: "${TILES_UPSTREAM_URL:-}"
-      TILES_USER_AGENT: "${TILES_USER_AGENT:-}"
-      TILES_CACHE_SIZE: "${TILES_CACHE_SIZE:-128MB}"
-      TILES_CACHE_TTL: "${TILES_CACHE_TTL:-168h}"
-      TILES_RATE_LIMIT_RPS: "${TILES_RATE_LIMIT_RPS:-10}"
-      TILES_RATE_LIMIT_BURST: "${TILES_RATE_LIMIT_BURST:-60}"
-      # Ceiling on upstream tile fetches across every device. Empty uses the
-      # gateway's default; images that predate it ignore the variable.
-      TILES_UPSTREAM_RATE_LIMIT_RPS: "${TILES_UPSTREAM_RATE_LIMIT_RPS:-}"
-      TILES_UPSTREAM_RATE_LIMIT_BURST: "${TILES_UPSTREAM_RATE_LIMIT_BURST:-}"
-
-      # Self-service registration (POST /register/token): the gateway mints a
-      # Synapse registration token through /_synapse/admin/v1/registration_tokens
-      # and emails it with Brevo — scripts/invite.sh by hand, automated. Off by
-      # default; the three below it are required once it is on.
-      REGISTRATION_ENABLED: "${REGISTRATION_ENABLED:-false}"
-      SYNAPSE_ADMIN_TOKEN: "${SYNAPSE_ADMIN_TOKEN:-}"
-      BREVO_API_KEY: "${BREVO_API_KEY:-}"
-      BREVO_SENDER_EMAIL: "${BREVO_SENDER_EMAIL:-}"
-      # Empty falls through to the gateway's own default for each of these, so
-      # no default is written twice. See .env.example for the values.
-      BREVO_SENDER_NAME: "${BREVO_SENDER_NAME:-}"
-      BREVO_BASE_URL: "${BREVO_BASE_URL:-}"
-      BREVO_TEMPLATE_ID: "${BREVO_TEMPLATE_ID:-}"
-      REGISTRATION_TOKEN_TTL: "${REGISTRATION_TOKEN_TTL:-}"
-      REGISTRATION_DAILY_CAP: "${REGISTRATION_DAILY_CAP:-}"
-      REGISTRATION_RATE_LIMIT_RPS: "${REGISTRATION_RATE_LIMIT_RPS:-}"
-      REGISTRATION_RATE_LIMIT_BURST: "${REGISTRATION_RATE_LIMIT_BURST:-}"
-      REGISTRATION_EMAIL_RATE_LIMIT_RPS: "${REGISTRATION_EMAIL_RATE_LIMIT_RPS:-}"
-      REGISTRATION_EMAIL_RATE_LIMIT_BURST: "${REGISTRATION_EMAIL_RATE_LIMIT_BURST:-}"
-
-      # Device tokens for /calls, /turn and /tiles.
-      ENROLL_TOKEN_TTL: "${ENROLL_TOKEN_TTL:-}"
-      ENROLL_RATE_LIMIT_RPS: "${ENROLL_RATE_LIMIT_RPS:-}"
-      ENROLL_RATE_LIMIT_BURST: "${ENROLL_RATE_LIMIT_BURST:-}"
-
-      BLOCK_FEDERATION: "true"
-      # Every request arrives from a Cloudflare edge address. Without its
-      # ranges here, all clients share a handful of IPs and Synapse's per-IP
-      # login and registration limits throttle everyone at once.
-      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:?set in .env: Cloudflare ranges}"
-      TRUSTED_PROXY_HEADER: "${TRUSTED_PROXY_HEADER:-x-forwarded-for}"
-
-      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-}"
-      MAX_BODY_SIZE: "${MAX_BODY_SIZE:-100MB}"
-      HSTS_MAX_AGE: "${HSTS_MAX_AGE:-0}"
-      HSTS_INCLUDE_SUBDOMAINS: "${HSTS_INCLUDE_SUBDOMAINS:-false}"
-      # Slow-client fence: body deadline and connection limits. Empty uses the
-      # gateway's defaults; images that predate them ignore the variables. The
-      # per-IP limit never counts TRUSTED_PROXY_CIDRS peers, which is every
-      # connection that arrives through Cloudflare.
-      BODY_READ_TIMEOUT: "${BODY_READ_TIMEOUT:-}"
-      MAX_CONNS_PER_IP: "${MAX_CONNS_PER_IP:-}"
-      MAX_CONNS: "${MAX_CONNS:-}"
-
-      # Upstream connection reuse and shutdown. Empty uses the gateway's
-      # defaults; stop_grace_period above should stay above SHUTDOWN_GRACE_PERIOD.
-      PROXY_IDLE_CONN_TIMEOUT: "${PROXY_IDLE_CONN_TIMEOUT:-}"
-      PROXY_MAX_IDLE_CONNS_PER_HOST: "${PROXY_MAX_IDLE_CONNS_PER_HOST:-}"
-      SHUTDOWN_GRACE_PERIOD: "${SHUTDOWN_GRACE_PERIOD:-}"
+    networks: [edge]
+    healthcheck:
+      # A loopback-only listener (nginx.conf).
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
     depends_on:
       synapse:
         condition: service_healthy
@@ -245,7 +187,7 @@ services:
       retries: 12
 
   # One-shot bootstrap (synapse/bootstrap.sh): signing key and secret files
-  # on first run, and sentry.yaml on every run.
+  # on first run, and the module secrets from .env on every run.
   synapse-init:
     container_name: zuno_synapse-init
     <<: *synapse
@@ -257,10 +199,10 @@ services:
     <<: *synapse
     # Loopback only, for an admin client on your own machine over an SSH tunnel:
     # ssh -L 8008:localhost:8008 <server> (README.md, Administration). Nothing
-    # outside this host can reach it; the public gateway still does not route
+    # outside this host can reach it; the public edge (nginx) still refuses
     # /_synapse/admin.
     ports: ["127.0.0.1:8008:8008"]
-    command: run -m synapse.app.homeserver --config-path=/config/homeserver.yaml --config-path=/data/sentry.yaml
+    command: run -m synapse.app.homeserver --config-path=/config/homeserver.yaml
     healthcheck:
       test: ["CMD-SHELL", "curl -fSs http://localhost:8008/health || exit 1"]
       interval: 10s
@@ -279,7 +221,7 @@ services:
   synapse-sync:
     container_name: zuno_synapse-sync
     <<: *synapse
-    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/sync.yaml --config-path=/data/sentry.yaml
+    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/sync.yaml
     healthcheck: *worker-healthcheck
     depends_on:
       synapse:
@@ -288,7 +230,7 @@ services:
   synapse-background:
     container_name: zuno_synapse-background
     <<: *synapse
-    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/background.yaml --config-path=/data/sentry.yaml
+    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/background.yaml
     healthcheck: *worker-healthcheck
     depends_on:
       synapse:
@@ -300,7 +242,7 @@ services:
     container_name: zuno_synapse-event-persister
     <<: *synapse
     profiles: ["events"]
-    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/event_persister.yaml --config-path=/data/sentry.yaml
+    command: run -m synapse.app.generic_worker --config-path=/config/homeserver.yaml --config-path=/config/workers/event_persister.yaml
     healthcheck: *worker-healthcheck
     depends_on:
       synapse:
@@ -318,7 +260,6 @@ services:
     logging: *logging
     environment:
       SYGNAL_CONF: /sygnal/sygnal.yaml
-      SENTRY_DSN: "${SYGNAL_SENTRY_DSN:-}"
     volumes:
       - <<: *bind
         source: ./sygnal

@@ -1,6 +1,7 @@
 # Builds ghcr.io/zuno-chat/zuno-synapse from synapse/Dockerfile and pushes it
-# tagged sha-<commit>. Bump a module's wheel tag in the Dockerfile, push, then
-# pin the new sha tag in docker-compose.yml. GITHUB_TOKEN pulls the private
+# tagged sha-<commit> and, on master, latest, which docker-compose.yml runs.
+# Bump a module's wheel tag in the Dockerfile and push; the server picks the
+# build up on its next docker compose pull. GITHUB_TOKEN pulls the private
 # wheel images: each one's package settings grant this repo read access under
 # Manage Actions access. Actions are pinned to commit SHAs; the comment is the
 # tag that SHA was.
@@ -36,8 +37,10 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/zuno-synapse
+          # A workflow_dispatch from another branch gets only its sha tag.
           tags: |
             type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: synapse

@@ -2,4 +2,3 @@
 ssl/*.key
 sygnal/*.json
 sygnal/*.p8
-synapse/modules/

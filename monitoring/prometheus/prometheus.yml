@@ -29,12 +29,6 @@ scrape_configs:
     static_configs:
       - targets: [sygnal:8000]
 
-  # METRICS_LISTEN_ADDR in docker-compose.yml. Reports down until an image
-  # that exposes it is deployed (README.md, Monitoring).
-  - job_name: gateway
-    static_configs:
-      - targets: [gateway:9090]
-
   # The latest usage report Synapse pushed (report_stats_endpoint in
   # homeserver.yaml). The values change every 3 hours, and the synapse_usage_*
   # series are absent from an exporter restart until the next report.

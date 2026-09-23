@@ -3,10 +3,11 @@
 Single source of truth for the production stack. One host, Docker Compose, Cloudflare in front.
 
 ```
-client ─▶ Cloudflare ─▶ gateway:443 ─┬─▶ synapse:8008 (main: everything but sync; zuno_calls module at /_synapse/client/zuno/calls/)
-                                     └─▶ synapse-sync:8083 (/sync, /events, /initialSync)
-synapse-background: background jobs, user directory, push delivery ─▶ gateway ─▶ sygnal ─▶ FCM
-postgres, redis: backend network only (no internet, unreachable from gateway and sygnal)
+client ─▶ Cloudflare ─▶ nginx:443 ─┬─▶ synapse:8008 (main: everything but sync; zuno_calls and zuno_register under /_synapse/client/zuno/)
+                                   ├─▶ synapse-sync:8083 (/sync, /events, /initialSync)
+                                   └─▶ api.maptiler.com (/maps/{z}/{x}/{y}: map tiles, the key added by nginx)
+synapse-background: background jobs, user directory, push delivery ─▶ nginx ─▶ sygnal ─▶ FCM
+postgres, redis: backend network only (no internet, unreachable from nginx and sygnal)
 monitoring profile: prometheus, grafana (loopback only) ─▶ alerts to ntfy
                     synapse-background ─▶ synapse-usage-exporter (usage totals, every 3 h)
 admin: synapse:8008 on the server's loopback only, for an admin client over an SSH tunnel
@@ -15,8 +16,9 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 | Path | What |
 |---|---|
 | `docker-compose.yml` | All services, pinned image versions, networks, log rotation |
-| `synapse/Dockerfile` | The Synapse image: official release plus Zuno's modules, built by `.github/workflows/synapse-image.yml`. Each module's CI publishes its wheel as `ghcr.io/zuno-chat/<module>-wheel:<tag>` on a `v*` tag; bump that tag in the Dockerfile, push, then pin the new `sha-` tag in `docker-compose.yml`. `homeserver.yaml` loads the module, so the official image no longer starts |
+| `synapse/Dockerfile` | The Synapse image: official release plus Zuno's modules, built by `.github/workflows/synapse-image.yml`. Each module's CI publishes its wheel as `ghcr.io/zuno-chat/<module>-wheel:<tag>` on a `v*` tag; bump that tag in the Dockerfile and push; CI tags the build `latest`, which `docker-compose.yml` runs. `homeserver.yaml` loads the modules, so the official image no longer starts |
 | `.env` (from `.env.example`) | Secrets and per-host values. Not in git |
+| `nginx/` | The public edge, on the stock nginx image: `nginx.conf` (routing, refusals, limits; its header says how to test and reload an edit), `cloudflare.conf` (Cloudflare's ranges, for real client IPs and the direct-to-origin fence), `push-allow.sh` (the push route's allow list, from `.env`), `maptiler-key.sh` (the MapTiler key for `/maps/`, from `.env`) |
 | `synapse/` | `homeserver.yaml` (shared), `workers/*.yaml`, `log.yaml`, `bootstrap.sh` |
 | `postgres/postgresql.conf`, `redis/redis.conf`, `sygnal/sygnal.yaml` | Service configs |
 | `monitoring/` | Prometheus config; Grafana datasources, dashboards and alert rules as files |
@@ -30,11 +32,10 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 2. **Cloudflare.** Proxied DNS record for `api.zuno.chat`, SSL mode *Full (strict)*, Bot Fight Mode off for that host (the app cannot solve challenges), and the push WAF rule below.
 3. **Files.** Clone this repo to e.g. `/opt/zuno`. Copy `.env`, `sygnal/service_account.json` and `ssl/cf_origin_key.key` over separately (`scp`), then:
    ```sh
-   chmod 600 .env sygnal/service_account.json
-   sudo chgrp 65532 ssl/cf_origin_key.key && chmod 640 ssl/cf_origin_key.key   # gateway runs as uid/gid 65532
+   chmod 600 .env sygnal/service_account.json ssl/cf_origin_key.key
    ```
-   Everything else stays world-readable (644): Synapse, Postgres and Redis read their configs as their own users.
-4. **Synapse image.** One-time: push the `v*` tag that `synapse/Dockerfile` names to zuno_calls, whose CI publishes `ghcr.io/zuno-chat/zuno-calls-wheel`. In that package's settings, *Manage Actions access*, add this repo with the *Read* role, so the workflow's own `GITHUB_TOKEN` can pull it. Run `.github/workflows/synapse-image.yml`, then pin the `sha-` tag it pushes in `x-synapse.image`. Fill in `app_id` and `turn_key_id` in the `modules:` block at the end of `synapse/homeserver.yaml`, the same values as `CF_CALLS_APP_ID` and `CF_TURN_KEY_ID` in `.env`: Synapse refuses to start while they are empty. The server needs `docker login ghcr.io` with a token that has `read:packages` if the image is private.
+   nginx reads the key as root. Everything else stays world-readable (644): Synapse, Postgres and Redis read their configs as their own users.
+4. **Synapse image.** One-time, for each module `synapse/Dockerfile` names (zuno_calls, zuno_register): push the `v*` tag it names to that repo, whose CI publishes `ghcr.io/zuno-chat/<module>-wheel`, and in that package's settings, *Manage Actions access*, add this repo with the *Read* role, so the workflow's own `GITHUB_TOKEN` can pull it. Run `.github/workflows/synapse-image.yml`; `x-synapse.image` runs the `latest` tag it pushes. In the `modules:` block at the end of `synapse/homeserver.yaml`, fill in zuno_calls' `app_id` and `turn_key_id` (Synapse refuses to start while they are empty), and set zuno_register's `sender_email` to an address Brevo has verified. The server needs `docker login ghcr.io` with a token that has `read:packages` if the image is private.
 5. **Start.** `docker compose config -q && docker compose pull && docker compose up -d --wait`. The first start runs Synapse's schema migration.
 6. **Once.**
    ```sh
@@ -43,17 +44,19 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
    ```
 7. **Verify.** `scripts/smoke-test.sh full` on the server, `scripts/smoke-test.sh public` from your laptop. Both must report 0 failures.
 
-**Invite tokens:** `scripts/invite.sh [uses] [valid-days]` on the server (defaults: 1 use, 7 days). It prompts for the admin login; the gateway does not expose `/_synapse/admin`.
+**Invite tokens:** `scripts/invite.sh [uses] [valid-days]` on the server (defaults: 1 use, 7 days). It prompts for the admin login; nginx refuses `/_synapse/admin`.
+
+**Signup codes:** the app's own signup asks zuno_register (`POST /_synapse/client/zuno/register/token`) to email a single-use token through Brevo. Its sender and limits are in `homeserver.yaml`'s `modules:` block, its API key is `BREVO_API_KEY` in `.env`.
 
 ## Before launch
 
 - [ ] **App uses refresh tokens.** `homeserver.yaml` gives sessions without one a 1-minute token. The app must pass `refreshToken: true` to `login`/`register` and set `onSoftLogout` on the SDK `Client`. Check: the app is still signed in after 10 idle minutes (catches a missing refresh token) and again the next day (catches a broken refresh: access tokens last 24h).
-- [ ] **Push route fenced at Cloudflare.** The gateway does not enforce `PUSHER_ALLOWED_CIDRS` (tested on `sha-0d7b560`). Add a WAF custom rule, action *Block*:
+- [ ] **Push route fenced.** nginx answers 403 on `/_matrix/push/v1/notify` to any address outside `PUSHER_ALLOWED_CIDRS`; `scripts/smoke-test.sh public` from outside checks it. A Cloudflare WAF custom rule, action *Block*, stops the same requests at the edge as well:
   `(http.host eq "api.zuno.chat" and http.request.uri.path eq "/_matrix/push/v1/notify" and not ip.src in {SERVER_IPV4})`.
-  `scripts/smoke-test.sh public` from outside checks it.
-- [ ] `TRUSTED_PROXY_CIDRS` holds Cloudflare's current ranges.
-- [ ] `TILES_UPSTREAM_URL` points at a provider that allows app traffic; the CF Calls and TURN credentials are set.
-- [ ] `https://zuno.chat/.well-known/matrix/client` returns the JSON in `.env.example`.
+- [ ] `nginx/cloudflare.conf` holds Cloudflare's current ranges. nginx drops connections from outside them (and this host's private networks) without answering, so a stale list turns Cloudflare's newest edges away instead of just mislabeling client addresses.
+- [ ] The CF Calls and TURN secrets and `BREVO_API_KEY` are set, and a signup code requested from the app reaches a real inbox.
+- [ ] `https://zuno.chat/.well-known/matrix/client` names the tile route: `"im.zuno.tiles": {"url": "https://api.zuno.chat/maps/{z}/{x}/{y}", "attribution": "MapTiler © OpenStreetMap contributors"}`. The app reads a map with `url`, not a bare string, and falls back to a plain grid otherwise.
+- [ ] `MAPTILER_API_KEY` is restricted to the User-Agent `im.zuno.chat` at MapTiler, and any key that was ever published in the well-known is revoked.
 - [ ] A real push reaches a phone while the app is in the background.
 - [ ] Backups run from cron, the first set has reached off-host storage, and a restore has been tested (below).
 - [ ] Monitoring is on, `scripts/smoke-test.sh monitoring` reports 0 failures, and an alert has reached your phone.
@@ -82,7 +85,7 @@ docker compose up -d --wait && scripts/smoke-test.sh full
 
 ## Monitoring
 
-Optional, on the same host: add `monitoring` to `COMPOSE_PROFILES`. Three containers: Prometheus, Grafana and synapse-usage-exporter. Prometheus scrapes every Synapse process, Sygnal, the gateway, the usage exporter and itself; Grafana shows that and sends alerts to ntfy, urgent ones at max priority. It listens only on the server's loopback:
+Optional, on the same host: add `monitoring` to `COMPOSE_PROFILES`. Three containers: Prometheus, Grafana and synapse-usage-exporter. Prometheus scrapes every Synapse process, Sygnal, the usage exporter and itself; Grafana shows that and sends alerts to ntfy, urgent ones at max priority. It listens only on the server's loopback:
 
 | UI | Reach it | Log in |
 |---|---|---|
@@ -95,9 +98,9 @@ Optional, on the same host: add `monitoring` to `COMPOSE_PROFILES`. Three contai
 **Enable**, with the base stack running:
 1. `.env`: fill in the Monitoring block from `.env.example`, and `COMPOSE_PROFILES=push,monitoring`.
 2. `docker compose up -d --wait`.
-3. `scripts/smoke-test.sh monitoring`: must report 0 failures, except the `gateway` scrape target while it is still down (below). In Grafana, *Alerting* > *Contact points* > *ntfy-urgent* > *Test* must reach your phone.
+3. `scripts/smoke-test.sh monitoring`: must report 0 failures. In Grafana, *Alerting* > *Contact points* > *ntfy-urgent* > *Test* must reach your phone.
 
-**Changing things.** Dashboards and alert rules are files in `monitoring/grafana/`; Grafana refuses UI edits to them. Edit the file, then `docker compose restart grafana`. The Synapse dashboard and rules come from Synapse's `contrib/` at the pinned version; *Zuno overview*, *Zuno gateway*, *Zuno calls*, *Zuno Sygnal* and *Zuno usage* are written here, against the metric names those services actually export.
+**Changing things.** Dashboards and alert rules are files in `monitoring/grafana/`; Grafana refuses UI edits to them. Edit the file, then `docker compose restart grafana`. The Synapse dashboard and rules come from Synapse's `contrib/` at the pinned version; *Zuno overview*, *Zuno calls*, *Zuno Sygnal* and *Zuno usage* are written here, against the metric names those services actually export.
 
 **Limits.**
 - Nothing pages if the host itself or Grafana is down, and nothing probes the public URL from outside: the outside uptime check in *Before launch* is not optional.
@@ -106,7 +109,7 @@ Optional, on the same host: add `monitoring` to `COMPOSE_PROFILES`. Three contai
 - Usage totals move once per report, so *Zuno usage* steps every 3 hours. The exporter keeps them in memory: after it restarts the dashboard reads *No data* until the next report, up to 3 hours later (5 minutes if `synapse-background` restarted too). The *Last report* tile shows their age. No alert watches them.
 - With the monitoring profile off the exporter is not running, and `synapse-background` logs `Error reporting stats` every 3 hours. If monitoring stays off, set `report_stats: false` in `homeserver.yaml`.
 - *Zuno calls* reads *No data* until the app has placed a call: the module's own series and Synapse's per-servlet ones exist only once a request has been served. Its alert matches only those series, so it stays silent until then.
-- The `gateway` scrape target reports **down** until an image exposing `METRICS_LISTEN_ADDR` is deployed, so `scripts/smoke-test.sh monitoring` fails on it and the *Zuno gateway* dashboard reads *No data* until then. No alert fires on it — the rules match only `job=~"master|generic_worker"` and `job="sygnal"`.
+- nginx is not scraped: the stock image exports no metrics. Its access log (`docker compose logs nginx`) is the only record of what the edge answered.
 
 **Adding a piece back.** Each removed service was self-contained: a container in `docker-compose.yml`, a scrape job in `monitoring/prometheus/prometheus.yml`, and its alert rules in `monitoring/grafana/provisioning/alerting/rules.yaml`. node-exporter is the highest value of them — 64 MB, and it alone restores disk, swap, OOM-kill and backup-overdue alerting.
 
@@ -118,15 +121,15 @@ No admin UI runs in this stack. The `synapse` service publishes its client port 
 ssh -L 8008:localhost:8008 <server>
 ```
 
-Then give the client `http://localhost:8008` as the homeserver and log in with the admin account from *First deploy* step 6. The public URL will not work for this: the gateway does not route `/_synapse/admin`.
+Then give the client `http://localhost:8008` as the homeserver and log in with the admin account from *First deploy* step 6. The public URL will not work for this: nginx refuses `/_synapse/admin`.
 
 **Server notices.** `POST /_synapse/admin/v1/send_server_notice` with `{"user_id": "@<user>:zuno.chat", "content": {"msgtype": "m.text", "body": "<text>"}}` messages one user from `@notices:zuno.chat`, in a room Synapse creates on the first notice and joins the user to. There is no broadcast: send one request per user. To give that room and its sender the logo, run `scripts/notice-avatar.sh <image>` on the server (square PNG, JPEG, WebP or GIF, 2 MB at most; an SVG will not do). It uploads the image, protects it from media retention and prints an `mxc://` URI. Put the URI in `system_mxid_avatar_url` and `room_avatar_url` under `server_notices` in `synapse/homeserver.yaml` and `docker compose restart synapse`. Each user's room picks the logo up with the next notice sent to them.
 
-**What this exposes.** Anything running on the server can reach Synapse's client and admin APIs at `127.0.0.1:8008` directly, bypassing the gateway and Cloudflare. Synapse's own auth and rate limits still apply; the edge protections do not. Nothing is reachable from off-host — `scripts/smoke-test.sh public` checks that the admin API is not public. An admin login can deactivate users, reset passwords and delete rooms and media, so never publish this port on a public interface.
+**What this exposes.** Anything running on the server can reach Synapse's client and admin APIs at `127.0.0.1:8008` directly, bypassing nginx and Cloudflare. Synapse's own auth and rate limits still apply; the edge protections do not. Nothing is reachable from off-host — `scripts/smoke-test.sh public` checks that the admin API is not public. An admin login can deactivate users, reset passwords and delete rooms and media, so never publish this port on a public interface.
 
 ## Updating
 
-Every image is pinned in `docker-compose.yml`; nothing changes on `pull` until a tag is edited. The gateway uses CI's `sha-<commit>` tags, never `latest`. Synapse's version lives in `synapse/Dockerfile`'s `FROM`: read the release's upgrade notes, bump it (and in the `zuno_calls` repo, its dev `Twisted` and `matrix-synapse` pins and `tests/e2e/Dockerfile`'s `FROM`), push, let `.github/workflows/synapse-image.yml` build, then pin the new `sha-` tag in `x-synapse.image`. Then: back up, `docker compose pull && docker compose up -d --wait`, `scripts/smoke-test.sh full` (and `monitoring` if enabled).
+Every image except Synapse's is pinned in `docker-compose.yml`; nothing else changes on `pull` until a tag is edited. Synapse runs `zuno-synapse:latest`, so `pull` fetches the newest master build; to hold a version or roll back, pin one of its `sha-` tags in `x-synapse.image`. nginx is the stock image: bump its tag for nginx's security releases. Synapse's version lives in `synapse/Dockerfile`'s `FROM`: read the release's upgrade notes, bump it (and in the `zuno_calls` and `zuno_register` repos, their dev `Twisted` and `matrix-synapse` pins and `tests/e2e/Dockerfile`'s `FROM`; zuno_register also reads two private Synapse attributes, so check its `synapse_private.py` against the new version), push, and let `.github/workflows/synapse-image.yml` build and tag it `latest`. Then: back up, `docker compose pull && docker compose up -d --wait`, `scripts/smoke-test.sh full` (and `monitoring` if enabled).
 
 With monitoring on, follow a Synapse or Postgres upgrade with `docker compose restart synapse-usage-exporter`. It labels every series with both versions and keeps the old series beside the new ones until it restarts, which makes *Zuno usage* read stale numbers.
 
@@ -153,6 +156,6 @@ Idle, the tier-1 stack uses about 500 MB: about 115 MB per Synapse process, 140 
 2. `.env`: add `events` to `COMPOSE_PROFILES`, e.g. `push,monitoring,events`.
 3. Every Synapse process must pick up the change together: `docker compose stop synapse synapse-sync synapse-background && docker compose up -d`.
 
-**Past tier 3, toward 100k.** The gateway sends everything except the sync family to the main process. Client reads, E2EE key traffic (`sendToDevice`, `keys/query`, `keys/claim`), receipts and typing therefore all share one core. Reaching 100k accounts needs:
-- more paths routed to workers: several sync workers with each user pinned to one, client-reader workers, and stream writers for `to_device`, `receipts`, `typing` and `account_data` (a gateway routing change);
+**Past tier 3, toward 100k.** nginx sends everything except the sync family to the main process. Client reads, E2EE key traffic (`sendToDevice`, `keys/query`, `keys/claim`), receipts and typing therefore all share one core. Reaching 100k accounts needs:
+- more paths routed to workers: several sync workers with each user pinned to one, client-reader workers, and stream writers for `to_device`, `receipts`, `typing` and `account_data` (a routing change in `nginx/nginx.conf`);
 - Postgres on its own host with a streaming replica.
