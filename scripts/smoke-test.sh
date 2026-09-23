@@ -55,7 +55,7 @@ case $(pub "$WELLKNOWN_URL") in
   *) fail "well-known served at $WELLKNOWN_URL" ;;
 esac
 expect "federation blocked" 403 "$(code "$BASE_URL/_matrix/federation/v1/version")"
-expect "admin API not public" 404 "$(code "$BASE_URL/_synapse/admin/v1/server_version")"
+expect "admin API not public" 403 "$(code "$BASE_URL/_synapse/admin/v1/server_version")"
 case $(pub -X POST "$BASE_URL/_matrix/client/v3/register" -d '{}') in
   *m.login.registration_token*) pass "registration requires an invite token" ;;
   *) fail "registration requires an invite token" ;;

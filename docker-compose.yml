@@ -73,7 +73,7 @@ services:
   gateway:
     container_name: zuno_gateway
     # CI tags every build sha-<commit>; never deploy latest.
-    image: ghcr.io/zuno-chat/zuno-gateway:sha-7592d8b
+    image: ghcr.io/zuno-chat/zuno-gateway:sha-6672a5c
     restart: unless-stopped
     logging: *logging
     # Lets in-flight /sync long-polls (30s) finish on redeploy.
