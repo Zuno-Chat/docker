@@ -362,7 +362,9 @@ modules:
       brevo:
         api_key_path: /data/secrets/brevo_api_key
         # Must be an address Brevo has verified for zuno.chat.
-        sender_email: noreply@zuno.chat
+        sender_email: no-reply@zuno.chat
+        sender_name: Zuno
+        template_id: 1
       # token_ttl stays at its default, 24h: the app tells users the code
       # "expires in 24 hours".
       # Mails per UTC day across every caller. The control that protects the
