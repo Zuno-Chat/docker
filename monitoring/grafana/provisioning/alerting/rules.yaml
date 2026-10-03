@@ -87,7 +87,7 @@ groups:
         execErrState: Alerting
         labels: {severity: warning}
         annotations:
-          summary: "Sygnal is not answering metrics scrapes: pushes cannot reach FCM."
+          summary: "Sygnal is not answering metrics scrapes: pushes cannot reach FCM or APNs."
         data:
           - refId: A
             datasourceUid: prometheus

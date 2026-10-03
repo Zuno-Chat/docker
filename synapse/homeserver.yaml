@@ -328,8 +328,8 @@ server_notices:
 # ------------------------------------------------------------------------------
 # Modules. Only the zuno-synapse image (synapse/Dockerfile) can import them; the
 # official image crash-loops on this block. Every worker loads them too, but
-# nginx routes /_synapse/client/ to main alone. Their secrets are files
-# bootstrap.sh writes from .env on every start.
+# nginx routes /_synapse/client/ to main alone, except zuno_push's test alert.
+# Their secrets are files bootstrap.sh writes from .env on every start.
 # ------------------------------------------------------------------------------
 modules:
   # Calls (docs/design.md in the zuno_calls repo): proxies Cloudflare Calls
@@ -378,3 +378,21 @@ modules:
       rate_limit:
         per_second: 0.001
         burst: 3
+
+  # iOS calls (README.md in the zuno_push repo): rings a closed iPhone with a
+  # sealed VoIP push through Sygnal, and serves the notification extension's
+  # API under /_synapse/client/zuno/push/v1/. It creates its own zuno_push_*
+  # tables in this database on start. Its poller and ring sender run on
+  # background_worker (run_background_tasks_on); POST test only works on the
+  # pusher instance, so nginx routes that one path to background_worker too.
+  # A broken config disables the module and leaves Synapse running.
+  - module: zuno_push.ZunoPush
+    config:
+      # Sygnal on the edge network, not the public /_matrix/push/v1/notify:
+      # this URL is ours, not the app's, so it skips Cloudflare and the
+      # push-allow list.
+      sygnal_notify_url: "http://sygnal:5000/_matrix/push/v1/notify"
+      # Exactly the VoIP app ids in sygnal.yaml. A development build's
+      # sandbox token is refused (400) until im.zuno.chat.ios.dev.voip is
+      # added there and here.
+      voip_app_ids: ["im.zuno.chat.ios.voip"]

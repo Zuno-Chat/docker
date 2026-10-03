@@ -1,4 +1,4 @@
-# Sygnal: Synapse -> nginx (POST /_matrix/push/v1/notify) -> here -> FCM.
+# Sygnal: Synapse -> nginx (POST /_matrix/push/v1/notify) -> here -> FCM or APNs.
 # Credentials sit next to this file, mounted read-only at /sygnal; never
 # commit them.
 
@@ -13,17 +13,21 @@ log:
         class: logging.StreamHandler
         formatter: normal
         stream: ext://sys.stdout
+    # WARNING, never INFO: Sygnal's INFO lines carry device tokens. That also
+    # silences the per-request access lines; for a debugging session, set
+    # sygnal.access back to INFO (those lines carry no tokens).
     loggers:
       sygnal.access:
         propagate: false
         handlers: [stdout]
-        level: INFO
+        level: WARNING
     root:
       handlers: [stdout]
-      level: INFO
+      level: WARNING
     disable_existing_loggers: false
   access:
-    # Only nginx connects, and it sets X-Forwarded-For.
+    # nginx sets X-Forwarded-For. zuno_push posts from Synapse over the edge
+    # network without one, so its requests log the container's own address.
     x_forwarded_for: true
 
 http:
@@ -48,3 +52,38 @@ apps:
     send_badge_counts: false
     # SIZING: concurrent connections to FCM.
     max_connections: 20
+
+  # Release builds. Debug builds register im.zuno.chat.ios.dev (sandbox),
+  # which has no app here, so Sygnal rejects them and Synapse drops the pusher.
+  im.zuno.chat.ios:
+    type: apns
+    platform: production
+    # Token auth with the .p8 from Apple Developer, Keys (APNs enabled).
+    # key_id and team_id are identifiers, not secrets. Sygnal refuses to
+    # start while either is empty.
+    keyfile: /sygnal/apns_auth_key.p8
+    key_id: "BVGYXQYUW6"
+    team_id: "5V9UP3J9CK"
+    # The app's bundle ID.
+    topic: im.zuno.chat
+    # The client's default_payload is a visible alert.
+    push_type: alert
+    send_badge_counts: false
+    
+  # Release builds. Debug builds register im.zuno.chat.ios.dev (sandbox),
+  # which has no app here, so Sygnal rejects them and Synapse drops the pusher.
+  im.zuno.chat.ios.voip:
+    type: apns
+    platform: production
+    # Token auth with the .p8 from Apple Developer, Keys (APNs enabled).
+    # key_id and team_id are identifiers, not secrets. Sygnal refuses to
+    # start while either is empty.
+    keyfile: /sygnal/apns_auth_key.p8
+    key_id: "BVGYXQYUW6"
+    team_id: "5V9UP3J9CK"
+    # The app's bundle ID.
+    topic: im.zuno.chat.voip
+    # The client's default_payload is a visible alert.
+    push_type: voip
+    send_badge_counts: false
+

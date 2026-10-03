@@ -253,8 +253,8 @@ services:
     # Built and published by element-hq/sygnal; the Docker Hub name is the
     # only one it publishes to (there is no ghcr.io/element-hq/sygnal).
     image: matrixdotorg/sygnal:v0.17.0
-    # Sygnal refuses to start without its FCM credentials, so it runs only
-    # with COMPOSE_PROFILES=push (README.md).
+    # Sygnal refuses to start without its FCM and APNs credentials, so it
+    # runs only with COMPOSE_PROFILES=push (README.md).
     profiles: ["push"]
     restart: unless-stopped
     logging: *logging

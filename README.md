@@ -6,7 +6,7 @@ Single source of truth for the production stack. One host, Docker Compose, Cloud
 client ─▶ Cloudflare ─▶ nginx:443 ─┬─▶ synapse:8008 (main: everything but sync; zuno_calls and zuno_register under /_synapse/client/zuno/)
                                    ├─▶ synapse-sync:8083 (/sync, /events, /initialSync)
                                    └─▶ api.maptiler.com (/maps/{z}/{x}/{y}: map tiles, the key added by nginx)
-synapse-background: background jobs, user directory, push delivery ─▶ nginx ─▶ sygnal ─▶ FCM
+synapse-background: background jobs, user directory, push delivery ─▶ nginx ─▶ sygnal ─▶ FCM, APNs
 postgres, redis: backend network only (no internet, unreachable from nginx and sygnal)
 monitoring profile: prometheus, grafana (loopback only) ─▶ alerts to ntfy
                     synapse-background ─▶ synapse-usage-exporter (usage totals, every 3 h)
@@ -22,7 +22,7 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 | `synapse/` | `homeserver.yaml` (shared), `workers/*.yaml`, `log.yaml`, `bootstrap.sh` |
 | `postgres/postgresql.conf`, `redis/redis.conf`, `sygnal/sygnal.yaml` | Service configs |
 | `monitoring/` | Prometheus config; Grafana datasources, dashboards and alert rules as files |
-| `sygnal/service_account.json` | Firebase credentials for push. Not in git |
+| `sygnal/service_account.json`, `sygnal/apns_auth_key.p8` | Push credentials: Firebase (Android) and the APNs auth key (iOS). Not in git |
 | `ssl/` | Cloudflare Origin CA cert and key for `*.zuno.chat`. Key not in git |
 | `scripts/` | `invite.sh`, `smoke-test.sh`, `backup.sh`: run from anywhere, they `cd` to the repo root |
 
@@ -30,9 +30,9 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 
 1. **Host.** Docker Engine with the compose plugin (Docker's apt repo, not Ubuntu's `docker.io`), `python3`, 2 GB of swap on small hosts. Allow inbound 443 only from [Cloudflare's ranges](https://www.cloudflare.com/ips/), plus SSH. Use the provider's firewall: ports Docker publishes bypass `ufw`.
 2. **Cloudflare.** Proxied DNS record for `api.zuno.chat`, SSL mode *Full (strict)*, Bot Fight Mode off for that host (the app cannot solve challenges), and the push WAF rule below.
-3. **Files.** Clone this repo to e.g. `/opt/zuno`. Copy `.env`, `sygnal/service_account.json` and `ssl/cf_origin_key.key` over separately (`scp`), then:
+3. **Files.** Clone this repo to e.g. `/opt/zuno`. Copy `.env`, `sygnal/service_account.json`, `sygnal/apns_auth_key.p8` and `ssl/cf_origin_key.key` over separately (`scp`), then:
    ```sh
-   chmod 600 .env sygnal/service_account.json ssl/cf_origin_key.key
+   chmod 600 .env sygnal/service_account.json sygnal/apns_auth_key.p8 ssl/cf_origin_key.key
    ```
    nginx reads the key as root. Everything else stays world-readable (644): Synapse, Postgres and Redis read their configs as their own users.
 4. **Synapse image.** One-time, for each module `synapse/Dockerfile` names (zuno_calls, zuno_register): push the `v*` tag it names to that repo, whose CI publishes `ghcr.io/zuno-chat/<module>-wheel`, and in that package's settings, *Manage Actions access*, add this repo with the *Read* role, so the workflow's own `GITHUB_TOKEN` can pull it. Run `.github/workflows/synapse-image.yml`; `x-synapse.image` runs the `latest` tag it pushes. In the `modules:` block at the end of `synapse/homeserver.yaml`, fill in zuno_calls' `app_id` and `turn_key_id` (Synapse refuses to start while they are empty), and set zuno_register's `sender_email` to an address Brevo has verified. The server needs `docker login ghcr.io` with a token that has `read:packages` if the image is private.
