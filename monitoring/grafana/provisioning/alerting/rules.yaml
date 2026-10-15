@@ -3,10 +3,15 @@
 # Their folder is not "Zuno": Grafana would create a second folder by that name
 # beside the dashboards'.
 #
-# Every rule reads Prometheus, which scrapes only Synapse (the zuno_calls
-# module included) and Sygnal: there are
-# no exporters, so nothing here covers the host, Postgres, Redis or the public
-# endpoint (README.md, Monitoring).
+# Every rule reads Prometheus: Synapse (the zuno_calls, zuno_register and
+# zuno_push modules included), Sygnal, node-exporter (the host and
+# scripts/backup.sh's last success) and postgres-exporter. Nothing covers
+# Redis, nginx or the public endpoint (README.md, Monitoring).
+#
+# The __dashboardUid__ and __panelId__ annotations tie a rule to the panel that
+# shows it: the panel marks the alert's state, and the ntfy message links to
+# it. Grafana also takes rule-level dashboardUid and panelId keys from a file,
+# but then leaves them off the alerts, so the link never reaches ntfy.
 #
 # noDataState: Alerting on urgent rules means a dead Prometheus pages too. The
 # limit of one host: if the host or Grafana is down, nothing pages.
@@ -26,6 +31,8 @@ groups:
         execErrState: Alerting
         labels: {severity: urgent}
         annotations:
+          __dashboardUid__: zuno-overview
+          __panelId__: "15"
           summary: "Synapse {{ $labels.process }} is not answering metrics scrapes."
         data:
           - refId: A
@@ -35,6 +42,48 @@ groups:
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+      # No data also alerts: postgres-exporter itself being down is reported
+      # as Postgres down, with the hint to check it.
+      - uid: postgres-down
+        title: Postgres down
+        condition: C
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        labels: {severity: urgent}
+        annotations:
+          __dashboardUid__: zuno-host
+          __panelId__: "17"
+          summary: "Postgres is not answering postgres-exporter: Synapse cannot read or write. If Postgres is up, the exporter cannot log in (docker compose logs postgres-exporter)."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'max(pg_up)'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+      - uid: disk-almost-full
+        title: Disk almost full
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: urgent}
+        annotations:
+          __dashboardUid__: zuno-host
+          __panelId__: "11"
+          summary: "{{ $labels.mountpoint }} has {{ humanizePercentage $values.A.Value }} free: Postgres stops writing when it is full."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'min by (mountpoint) (node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|fuse.*"} / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|fuse.*"})'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [0.10]}}]}
 
   - orgId: 1
     name: warning
@@ -51,6 +100,8 @@ groups:
         execErrState: Alerting
         labels: {severity: warning}
         annotations:
+          __dashboardUid__: zuno-overview
+          __panelId__: "9"
           summary: "Synapse {{ $labels.process }} has used {{ humanizePercentage $values.A.Value }} of a core for 15 minutes."
         data:
           - refId: A
@@ -69,6 +120,8 @@ groups:
         execErrState: Alerting
         labels: {severity: warning}
         annotations:
+          __dashboardUid__: zuno-overview
+          __panelId__: "11"
           summary: "Synapse has been failing to deliver pushes to Sygnal for 15 minutes."
         data:
           - refId: A
@@ -87,6 +140,8 @@ groups:
         execErrState: Alerting
         labels: {severity: warning}
         annotations:
+          __dashboardUid__: zuno-overview
+          __panelId__: "15"
           summary: "Sygnal is not answering metrics scrapes: pushes cannot reach FCM or APNs."
         data:
           - refId: A
@@ -96,6 +151,49 @@ groups:
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+      # Refusals and not one acceptance in 30 minutes: the credentials, not a
+      # few dead installs. 403 is APNs refusing the .p8 key.
+      - uid: apns-refusing
+        title: APNs refusing every push
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-sygnal
+          __panelId__: "37"
+          summary: "APNs has refused every {{ $labels.pushkin }} push for 30 minutes (403 or 5xx): iPhones get no messages or call rings. Check sygnal/apns_auth_key.p8, key_id and team_id."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 1800, to: 0}
+            model: {refId: A, instant: true, expr: 'sum by (pushkin) (rate(sygnal_apns_status_codes_total{code=~"403|5.."}[30m])) unless sum by (pushkin) (rate(sygnal_apns_status_codes_total{code="200"}[30m])) > 0'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      # The same for FCM: 401 and 403 are the service account.
+      - uid: fcm-refusing
+        title: FCM refusing every push
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-sygnal
+          __panelId__: "30"
+          summary: "FCM has refused every {{ $labels.pushkin }} push for 30 minutes (401, 403 or 5xx): Android phones get no pushes. Check sygnal/service_account.json."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 1800, to: 0}
+            model: {refId: A, instant: true, expr: 'sum by (pushkin) (rate(sygnal_gcm_status_codes_total{code=~"401|403|5.."}[30m])) unless sum by (pushkin) (rate(sygnal_gcm_status_codes_total{code="200"}[30m])) > 0'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
 
       # The zuno_calls module could not get a response from Cloudflare in every
       # 5-minute window for 15 minutes: calls cannot be set up. Only its own
@@ -108,12 +206,287 @@ groups:
         execErrState: Alerting
         labels: {severity: warning}
         annotations:
+          __dashboardUid__: zuno-calls
+          __panelId__: "14"
           summary: "The calls module has been failing to reach Cloudflare ({{ $labels.api }}) for 15 minutes."
         data:
           - refId: A
             datasourceUid: prometheus
             relativeTimeRange: {from: 900, to: 0}
             model: {refId: A, instant: true, expr: 'sum by (api) (rate(zuno_calls_upstream_errors_total{reason=~"timeout|connect"}[5m]))'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      # Rings are rare, so a count over a window rather than a rate held for
+      # a while.
+      - uid: ios-rings-failing
+        title: iOS call rings failing
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-calls
+          __panelId__: "22"
+          summary: "{{ printf \"%.0f\" $values.A.Value }} VoIP rings failed at Sygnal in 30 minutes: closed iPhones are not ringing."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 1800, to: 0}
+            model: {refId: A, instant: true, expr: 'sum(increase(zuno_push_voip_sends_total{result=~"failed|unreachable|timeout"}[30m]))'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [2]}}]}
+
+      - uid: zuno-push-feature-off
+        title: zuno_push feature off
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-calls
+          __panelId__: "26"
+          summary: "zuno_push {{ $labels.feature }} is not serving: a startup probe failed, or it is in disabled_features. docker compose logs synapse | grep zuno_push"
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'min by (feature) (zuno_push_feature_enabled)'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+      # Resolves 15 minutes after the last refusal.
+      - uid: signup-cap-reached
+        title: Signup daily cap reached
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-signup
+          __panelId__: "2"
+          summary: "Signup hit daily_cap: new users are refused a code until 00:00 UTC. Raise daily_cap in homeserver.yaml to let them in."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 900, to: 0}
+            model: {refId: A, instant: true, expr: 'sum(increase(zuno_register_requests_total{result="global_limited"}[15m]))'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      - uid: signup-failing
+        title: Signup codes failing
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-signup
+          __panelId__: "7"
+          summary: "{{ printf \"%.0f\" $values.A.Value }} signup requests failed in 30 minutes (Brevo, Redis or the database): new users get no code."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 1800, to: 0}
+            model: {refId: A, instant: true, expr: 'sum(increase(zuno_register_requests_total{result=~"brevo_error|redis_error|store_error"}[30m]))'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [2]}}]}
+
+      - uid: disk-filling
+        title: Disk filling
+        condition: C
+        for: 30m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-host
+          __panelId__: "11"
+          summary: "{{ $labels.mountpoint }} has {{ humanizePercentage $values.A.Value }} free."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'min by (mountpoint) (node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|fuse.*"} / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|fuse.*"})'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [0.20]}}]}
+
+      - uid: memory-low
+        title: Host memory low
+        condition: C
+        for: 15m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-host
+          __panelId__: "10"
+          summary: "The host has had {{ humanizePercentage $values.A.Value }} of its memory available for 15 minutes: next comes swapping, then the OOM killer."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [0.10]}}]}
+
+      # Counts a container hitting its mem_limit too. Resolves 10 minutes after
+      # the last kill.
+      - uid: oom-kill
+        title: OOM kill
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-host
+          __panelId__: "14"
+          summary: "The kernel killed a process for memory in the last 10 minutes: docker compose ps shows which container restarted."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'sum(increase(node_vmstat_oom_kill[10m]))'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      # backup.sh runs daily; 26 hours leaves room for a slow run. No data
+      # alerts: a backup that never finished writes no timestamp.
+      - uid: backup-overdue
+        title: Backup overdue
+        condition: C
+        for: 5m
+        noDataState: Alerting
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-host
+          __panelId__: "7"
+          summary: "No complete scripts/backup.sh run in 26 hours, or none recorded in /var/lib/zuno/metrics."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'time() - max(zuno_backup_last_success_timestamp_seconds)'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [93600]}}]}
+
+      # Synapse rarely holds a transaction for more than seconds. Idle in
+      # transaction keeps its locks and stops vacuum behind it.
+      - uid: postgres-idle-in-transaction
+        title: Postgres transaction stuck
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-host
+          __panelId__: "25"
+          summary: "A connection to the synapse database has sat idle in a transaction for {{ humanizeDuration $values.A.Value }}: it holds its locks and blocks vacuum."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'max(pg_stat_activity_max_tx_duration{datname="synapse",state=~"idle in transaction.*"})'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [300]}}]}
+
+      # Without them the host, Postgres, backup and usage alerts above read no
+      # data and stay silent.
+      - uid: exporter-down
+        title: Exporter down
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Alerting
+        labels: {severity: warning}
+        annotations:
+          __dashboardUid__: zuno-overview
+          __panelId__: "15"
+          summary: "{{ $labels.job }} is not answering scrapes: the alerts that read it are blind."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'up{job=~"node-exporter|postgres-exporter|synapse-usage"}'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+  # Events, not problems: one ntfy message each and never a resolved one
+  # (policies.yaml routes them by their event label). Each compares a count
+  # with a minute ago, from postgres-exporter's queries.yaml. The count itself
+  # is a label, so a second account in the next minute is a new alert, and so
+  # a new message, instead of one that stays firing. Provisioning expands
+  # $name in labels as an environment variable (not in annotations), so label
+  # templates write $$values. The messages carry no account or report details.
+  - orgId: 1
+    name: events
+    folder: Zuno alerts
+    interval: 1m
+    rules:
+      - uid: new-account
+        title: New account
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: OK
+        labels:
+          severity: event
+          event: account
+          accounts: '{{ printf "%.0f" $$values.B.Value }}'
+        annotations:
+          summary: '{{ if eq $values.A.Value 1.0 }}A new account was created.{{ else }}{{ printf "%.0f" $values.A.Value }} new accounts were created.{{ end }}'
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'sum(zuno_accounts_registered) - sum(zuno_accounts_registered offset 1m)'}
+          - refId: B
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: B, instant: true, expr: 'sum(zuno_accounts_registered)'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
+
+      - uid: new-report
+        title: New report
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: OK
+        labels:
+          severity: event
+          event: report
+          filed: '{{ printf "%.0f" $$values.B.Value }}'
+        annotations:
+          summary: '{{ if eq $values.A.Value 1.0 }}A {{ $labels.kind }} was reported.{{ else }}{{ printf "%.0f" $values.A.Value }} {{ $labels.kind }}s were reported.{{ end }} Review it in the admin client.'
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'sum by (kind) (zuno_reports_filed) - sum by (kind) (zuno_reports_filed offset 1m)'}
+          - refId: B
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: B, instant: true, expr: 'sum by (kind) (zuno_reports_filed)'}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}

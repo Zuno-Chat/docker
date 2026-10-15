@@ -46,7 +46,7 @@
           "uid": "prometheus"
         },
         "enable": true,
-        "expr": "(\n  changes(process_start_time_seconds{job=\"synapse\"}[$bucket_size]) * on (instance, job, index) group_left(server_name)\n  synapse_server_name_info{server_name=\"$server_name\"}\n) * on (instance, job, index) group_left(version) synapse_build_info{job=\"synapse\"}",
+        "expr": "(\n  changes(process_start_time_seconds{job=~\"master|generic_worker\"}[$bucket_size]) * on (instance, job, index) group_left(server_name)\n  synapse_server_name_info{server_name=\"$server_name\"}\n) * on (instance, job, index) group_left(version) synapse_build_info{job=~\"master|generic_worker\"}",
         "hide": false,
         "iconColor": "purple",
         "name": "deploys",
@@ -60,14 +60,14 @@
   "id": null,
   "links": [
     {
-      "asDropdown": false,
+      "asDropdown": true,
       "icon": "external link",
-      "includeVars": true,
+      "includeVars": false,
       "keepTime": true,
       "tags": [
-        "matrix"
+        "zuno"
       ],
-      "title": "Dashboards",
+      "title": "Zuno",
       "type": "dashboards"
     }
   ],
@@ -862,7 +862,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(\n  synapse_build_info{job=\"synapse\"} * on (instance, job, index) group_left(server_name)\n  synapse_server_name_info{server_name=\"$server_name\"}\n) - 1",
+          "expr": "(\n  synapse_build_info{job=~\"master|generic_worker\"} * on (instance, job, index) group_left(server_name)\n  synapse_server_name_info{server_name=\"$server_name\"}\n) - 1",
           "legendFormat": "version {{version}}",
           "range": true,
           "refId": "deployed_synapse_versions"
@@ -1342,7 +1342,7 @@
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "(\n  synapse_build_info{job=\"synapse\"} * on (instance, job, index) group_left(server_name)\n  synapse_server_name_info{server_name=\"$server_name\"}\n) - 1",
+              "expr": "(\n  synapse_build_info{job=~\"master|generic_worker\"} * on (instance, job, index) group_left(server_name)\n  synapse_server_name_info{server_name=\"$server_name\"}\n) - 1",
               "hide": false,
               "legendFormat": "version {{version}}",
               "range": true,
@@ -7714,7 +7714,8 @@
   "refresh": "",
   "schemaVersion": 42,
   "tags": [
-    "matrix"
+    "matrix",
+    "zuno"
   ],
   "templating": {
     "list": [

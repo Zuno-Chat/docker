@@ -6,14 +6,713 @@
   ],
   "timezone": "utc",
   "schemaVersion": 41,
-  "version": 2,
+  "version": 3,
   "editable": false,
   "refresh": "1m",
   "time": {
     "from": "now-6h",
     "to": "now"
   },
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "zuno"
+      ],
+      "title": "Zuno",
+      "type": "dashboards"
+    }
+  ],
   "panels": [
+    {
+      "type": "row",
+      "title": "Now",
+      "id": 1,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "alertlist",
+      "title": "Alerts",
+      "id": 2,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "viewMode": "list",
+        "groupMode": "default",
+        "groupBy": [],
+        "maxItems": 20,
+        "sortOrder": 3,
+        "dashboardAlerts": false,
+        "alertName": "",
+        "alertInstanceLabelFilter": "{severity=~\"urgent|warning\"}",
+        "showInstances": false,
+        "stateFilter": {
+          "firing": true,
+          "pending": true,
+          "noData": true,
+          "normal": false,
+          "error": true
+        }
+      },
+      "description": "Firing and pending alerts from every rule in the Zuno alerts folder, except the New account and New report notifications. Empty is good."
+    },
+    {
+      "type": "stat",
+      "title": "5xx share",
+      "id": 3,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "links": [
+            {
+              "title": "Open Synapse",
+              "url": "/d/zuno-synapse?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(rate(synapse_http_server_response_time_seconds_count{code=~\"5..\"}[$__rate_interval])) or vector(0)) / sum(rate(synapse_http_server_response_time_seconds_count[$__rate_interval]))"
+        }
+      ],
+      "description": "Share of every Synapse response that was a 5xx, across all processes and routes."
+    },
+    {
+      "type": "stat",
+      "title": "Message send p95",
+      "id": 4,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "unit": "s",
+          "links": [
+            {
+              "title": "Open Synapse",
+              "url": "/d/zuno-synapse?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(synapse_http_server_response_time_seconds_bucket{servlet=\"RoomSendEventRestServlet\",code=~\"2..\"}[$__rate_interval])))"
+        }
+      ],
+      "description": "How long Synapse takes to accept a message the app sends. No data while nobody sends."
+    },
+    {
+      "type": "stat",
+      "title": "Pushes accepted",
+      "id": 5,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 0.8
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "links": [
+            {
+              "title": "Open Zuno Sygnal",
+              "url": "/d/zuno-sygnal?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "((sum(rate(sygnal_gcm_status_codes_total{code=\"200\"}[$__rate_interval])) or vector(0)) + (sum(rate(sygnal_apns_status_codes_total{code=\"200\"}[$__rate_interval])) or vector(0))) / (((sum(rate(sygnal_gcm_status_codes_total[$__rate_interval])) or vector(0)) + (sum(rate(sygnal_apns_status_codes_total[$__rate_interval])) or vector(0))) > 0)"
+        }
+      ],
+      "description": "Share of pushes FCM and APNs accepted. A phone that uninstalled the app answers 404 or 410 until Synapse drops its pusher, so a little under 100% is normal. No data without pushes."
+    },
+    {
+      "type": "stat",
+      "title": "Calls 5xx share",
+      "id": 6,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "links": [
+            {
+              "title": "Open Zuno calls",
+              "url": "/d/zuno-calls?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum(rate(synapse_http_server_response_time_seconds_count{servlet=~\"SFUResource|TurnResource\",code=~\"5..\"}[$__rate_interval])) or vector(0)) / sum(rate(synapse_http_server_response_time_seconds_count{servlet=~\"SFUResource|TurnResource\"}[$__rate_interval]))"
+        }
+      ],
+      "description": "Share of call signaling and TURN credential requests that failed, almost always because Cloudflare was unreachable. No data until a call has been placed."
+    },
+    {
+      "type": "stat",
+      "title": "Active, 24 h",
+      "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "links": [
+            {
+              "title": "Open Zuno usage",
+              "url": "/d/zuno-usage?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(synapse_usage_daily_active_users)"
+        }
+      ],
+      "description": "Accounts seen in the last 24 hours, from the 3-hourly usage report."
+    },
+    {
+      "type": "stat",
+      "title": "Signup codes today",
+      "id": 13,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0,
+          "links": [
+            {
+              "title": "Open Zuno signup",
+              "url": "/d/zuno-signup?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "round(sum(increase(zuno_register_requests_total{result=~\"ok|resent\"}[$__range]))) or vector(0)"
+        }
+      ],
+      "timeFrom": "now/d",
+      "hideTimeOverride": true,
+      "description": "Codes mailed since 00:00 UTC. daily_cap in homeserver.yaml is 100: at the cap every new signup is refused until midnight UTC. Keep these thresholds in step with it."
+    },
+    {
+      "type": "stat",
+      "title": "Disk free",
+      "id": 14,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 0.1
+              },
+              {
+                "color": "green",
+                "value": 0.2
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "links": [
+            {
+              "title": "Open Zuno host",
+              "url": "/d/zuno-host?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "min(node_filesystem_avail_bytes{fstype!~\"tmpfs|ramfs|fuse.*\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|ramfs|fuse.*\"})"
+        }
+      ],
+      "description": "The fullest filesystem on the host. Postgres stops writing when its disk is full; alerts fire below 20% and, urgent, below 10%."
+    },
+    {
+      "type": "stat",
+      "title": "Last backup",
+      "id": 7,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 93600
+              }
+            ]
+          },
+          "unit": "s",
+          "noValue": "None recorded",
+          "links": [
+            {
+              "title": "Open Zuno host",
+              "url": "/d/zuno-host?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "time() - max(zuno_backup_last_success_timestamp_seconds)"
+        }
+      ],
+      "description": "Age of the last complete scripts/backup.sh run, which writes /var/lib/zuno/metrics/zuno_backup.prom last. None recorded: it has never finished on this host, or node-exporter cannot read that directory. Alerts after 26 hours."
+    },
+    {
+      "type": "state-timeline",
+      "title": "Scrape targets",
+      "id": 15,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 80
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "down",
+                  "color": "red",
+                  "index": 1
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "alignValue": "left",
+        "rowHeight": 0.8,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "label_replace(label_replace(label_replace(up, \"target\", \"$1\", \"job\", \"(.+)\"), \"target\", \"$1\", \"service\", \"(.+)\"), \"target\", \"synapse $1\", \"process\", \"(.+)\")",
+          "legendFormat": "{{target}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(pg_up)",
+          "legendFormat": "postgres"
+        }
+      ],
+      "description": "Every process Prometheus scrapes, and Postgres itself as postgres-exporter sees it. sygnal reads down while the push profile is off."
+    },
     {
       "id": 8,
       "type": "row",
@@ -23,7 +722,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 19
       },
       "panels": []
     },
@@ -39,7 +738,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 1
+        "y": 20
       },
       "targets": [
         {
@@ -92,7 +791,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 1
+        "y": 20
       },
       "targets": [
         {
@@ -126,7 +825,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 1
+        "y": 20
       },
       "targets": [
         {
@@ -163,5 +862,6 @@
   },
   "annotations": {
     "list": []
-  }
+  },
+  "graphTooltip": 1
 }

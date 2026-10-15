@@ -9,6 +9,7 @@
 # stores, so neither nginx nor Sygnal can reach Postgres or Redis.
 # `monitoring` (internal) carries scrapes and Synapse's usage report to
 # synapse-usage-exporter; only Grafana reaches out, through `monitoring-egress`.
+# postgres-exporter alone sits on both `backend` and `monitoring`.
 #
 # Compose checks ${VAR:?} even in services whose profile is off, so the
 # monitoring profile's secrets use ${VAR:-} and are checked at container start.
@@ -328,6 +329,113 @@ services:
       retries: 3
       start_period: 10s
 
+  # Host metrics: disk, memory, swap, OOM kills, temperature, and the last
+  # successful scripts/backup.sh run (textfile collector). It reads the host
+  # through a read-only bind of /, and pid: host so the mount table it reads is
+  # the host's. It stays on the internal monitoring network, so the network
+  # collectors would see only its own interface: they are off.
+  node-exporter:
+    container_name: zuno_node-exporter
+    <<: *monitoring
+    image: prom/node-exporter:v1.12.1
+    command:
+      - --path.rootfs=/host
+      - --path.udev.data=/host/run/udev/data
+      # backup.sh's METRICS_DIR default, through the bind below. If cron sets
+      # another METRICS_DIR, change this too.
+      - --collector.textfile.directory=/host/var/lib/zuno/metrics
+      - --no-collector.arp
+      - --no-collector.netclass
+      - --no-collector.netdev
+      - --no-collector.netstat
+      - --no-collector.sockstat
+      - --log.level=warn
+    pid: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - type: bind
+        source: /
+        target: /host
+        read_only: true
+        bind:
+          propagation: rslave
+          create_host_path: false
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "wget", "-qO/dev/null", "http://localhost:9100/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # One-shot, on every `up`: creates the zuno_monitor role postgres-exporter
+  # logs in as, or resets its password to POSTGRES_MONITOR_PASSWORD, and the
+  # count-only functions behind the account and report notifications
+  # (monitoring/postgres/monitor-role.sql).
+  postgres-monitor-init:
+    container_name: zuno_postgres-monitor-init
+    <<: *monitoring
+    image: postgres:18.6-alpine
+    restart: "no"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - '[ -n "$$MONITOR_PASSWORD" ] || { echo "Set POSTGRES_MONITOR_PASSWORD in .env" >&2; exit 1; }; exec psql -h postgres -U synapse -d synapse -q -v ON_ERROR_STOP=1 -v pw="$$MONITOR_PASSWORD" -f /monitor-role.sql'
+    environment:
+      PGPASSWORD: "${POSTGRES_PASSWORD:?set in .env}"
+      PGOPTIONS: -c client_min_messages=warning
+      MONITOR_PASSWORD: "${POSTGRES_MONITOR_PASSWORD:-}"
+    volumes:
+      - <<: *bind
+        source: ./monitoring/postgres/monitor-role.sql
+        target: /monitor-role.sql
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Postgres statistics, as zuno_monitor: pg_monitor reads statistics and
+  # settings, not tables, and the account and report counts come from
+  # functions that return nothing else. On backend to reach Postgres and on
+  # monitoring to be scraped; neither network has egress.
+  postgres-exporter:
+    container_name: zuno_postgres-exporter
+    <<: *monitoring
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    command:
+      - --log.level=warn
+      # Per-table statistics are ~29 series for each of Synapse's ~180
+      # tables, about 5,000 in all, which no dashboard or alert reads; with
+      # the settings dump they would be most of Prometheus' series.
+      - --no-collector.stat_user_tables
+      - --no-collector.statio_user_tables
+      - --no-collector.settings
+      # Marked deprecated upstream, and still the only way to add a query:
+      # check it still exists before moving this image's tag.
+      - --extend.query-path=/etc/postgres-exporter/queries.yaml
+    environment:
+      DATA_SOURCE_URI: postgres:5432/synapse?sslmode=disable
+      DATA_SOURCE_USER: zuno_monitor
+      DATA_SOURCE_PASS: "${POSTGRES_MONITOR_PASSWORD:-}"
+    volumes:
+      - <<: *bind
+        source: ./monitoring/postgres/queries.yaml
+        target: /etc/postgres-exporter/queries.yaml
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [backend, monitoring]
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "wget", "-qO/dev/null", "http://localhost:9187/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres-monitor-init:
+        condition: service_completed_successfully
+
   grafana:
     container_name: zuno_grafana
     <<: *monitoring
@@ -344,7 +452,10 @@ services:
       # Applies when grafana-data is first created; later changes need
       # grafana cli admin reset-admin-password.
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-}"
+      # Also the base of the panel links in alert notifications: they open
+      # through the SSH tunnel.
       GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/overview.json
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"

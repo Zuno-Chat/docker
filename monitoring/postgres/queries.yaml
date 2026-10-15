@@ -1,0 +1,19 @@
+# postgres-exporter's own queries (--extend.query-path in docker-compose.yml),
+# for the New account and New report notifications. Only counts: the
+# functions they call (monitor-role.sql) return nothing else.
+zuno_accounts:
+  query: "SELECT monitoring.accounts() AS registered"
+  metrics:
+    - registered:
+        usage: "GAUGE"
+        description: "Accounts ever registered, deactivated ones included"
+
+zuno_reports:
+  query: "SELECT kind, filed FROM monitoring.reports()"
+  metrics:
+    - kind:
+        usage: "LABEL"
+        description: "What was reported: message, room or user"
+    - filed:
+        usage: "GAUGE"
+        description: "Reports ever filed"

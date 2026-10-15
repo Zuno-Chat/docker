@@ -10,6 +10,7 @@ synapse-background: background jobs, user directory, push delivery ─▶ nginx 
 postgres, redis: backend network only (no internet, unreachable from nginx and sygnal)
 monitoring profile: prometheus, grafana (loopback only) ─▶ alerts to ntfy
                     synapse-background ─▶ synapse-usage-exporter (usage totals, every 3 h)
+                    node-exporter (the host), postgres-exporter (Postgres, read-only role)
 admin: synapse:8008 on the server's loopback only, for an admin client over an SSH tunnel
 ```
 
@@ -21,7 +22,7 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 | `nginx/` | The public edge, on the stock nginx image: `nginx.conf` (routing, refusals, limits; its header says how to test and reload an edit), `cloudflare.conf` (Cloudflare's ranges, for real client IPs and the direct-to-origin fence), `push-allow.sh` (the push route's allow list, from `.env`), `maptiler-key.sh` (the MapTiler key for `/maps/`, from `.env`) |
 | `synapse/` | `homeserver.yaml` (shared), `workers/*.yaml`, `log.yaml`, `bootstrap.sh` |
 | `postgres/postgresql.conf`, `redis/redis.conf`, `sygnal/sygnal.yaml` | Service configs |
-| `monitoring/` | Prometheus config; Grafana datasources, dashboards and alert rules as files |
+| `monitoring/` | Prometheus config; Grafana datasources, dashboards and alert rules as files; postgres-exporter's role and count queries |
 | `sygnal/service_account.json`, `sygnal/apns_auth_key.p8` | Push credentials: Firebase (Android) and the APNs auth key (iOS). Not in git |
 | `ssl/` | Cloudflare Origin CA cert and key for `*.zuno.chat`. Key not in git |
 | `scripts/` | `invite.sh`, `smoke-test.sh`, `backup.sh`: run from anywhere, they `cd` to the repo root |
@@ -85,33 +86,54 @@ docker compose up -d --wait && scripts/smoke-test.sh full
 
 ## Monitoring
 
-Optional, on the same host: add `monitoring` to `COMPOSE_PROFILES`. Three containers: Prometheus, Grafana and synapse-usage-exporter. Prometheus scrapes every Synapse process, Sygnal, the usage exporter and itself; Grafana shows that and sends alerts to ntfy, urgent ones at max priority. It listens only on the server's loopback:
+Optional, on the same host: add `monitoring` to `COMPOSE_PROFILES`. Five containers and a one-shot: Prometheus, Grafana, synapse-usage-exporter, node-exporter, postgres-exporter, and postgres-monitor-init, which creates the read-only `zuno_monitor` role postgres-exporter logs in as. Prometheus scrapes every Synapse process, Sygnal, the three exporters and itself; Grafana shows that and sends alerts to ntfy, urgent ones at max priority. It listens only on the server's loopback:
 
 | UI | Reach it | Log in |
 |---|---|---|
 | Grafana: dashboards (folder *Zuno*), alert rules (*Zuno alerts*) | `ssh -L 3000:localhost:3000 <server>`, then http://localhost:3000 | `admin` / `GRAFANA_ADMIN_PASSWORD`, read on first start only |
 
+Grafana opens on *Zuno overview*: firing alerts, a tile per area (each opens its dashboard), and every scrape target's up/down history. The *Zuno* menu at the top of every dashboard switches between them:
+
+| Dashboard | Shows |
+|---|---|
+| *Zuno overview* | Alerts, headline tiles, scrape targets, CPU and memory per Synapse process |
+| *Zuno host* | Disk, memory, swap, OOM kills, temperature, the last backup; Postgres connections, cache hit ratio, transactions and size |
+| *Zuno calls* | Cloudflare Calls signaling and TURN (zuno_calls); iOS ringing: VoIP sends, ring latency, which zuno_push features are serving |
+| *Zuno Sygnal* | Pushes per app, FCM and APNs responses and timing |
+| *Zuno signup* | Codes mailed today against `daily_cap`, outcomes, Brevo responses (zuno_register) |
+| *Zuno usage* | Accounts, active users, rooms and messages from the usage report |
+| *Synapse* | Synapse's own dashboard, every subsystem |
+
+Each alert rule is tied to the panel that shows it: that panel marks the alert's state, and the ntfy message ends with a link to it, which opens while the SSH tunnel is up.
+
 **Usage totals, and nothing leaves the host.** Synapse's Prometheus metrics are operational only. Usage totals (accounts, active users, rooms, messages) exist solely as the report Synapse pushes to `report_stats_endpoint`, which defaults to matrix.org. `homeserver.yaml` points it at [synapse-usage-exporter](https://github.com/loelkes/synapse-usage-exporter) instead: the background worker PUTs the totals to it over the internal `monitoring` network, 5 minutes after it starts and then every 3 hours, and Prometheus scrapes the latest report for the *Zuno usage* dashboard. The privacy policy promises no analytics and names every third party: these are aggregate counts with no user or room identifiers, and no third party receives them. Keep `report_stats: true` and `report_stats_endpoint` together — without the endpoint line the totals go to matrix.org. If a stats or metrics destination outside this host is ever added, the privacy policy has to name it first.
 
-**What is not covered.** There are no host or database exporters, no log collection and no error tracker, so nothing watches the host (disk, memory, swap, OOM kills), Postgres, Redis, or the public URL, and no alert can fire on any of them. Logs live only in Docker's rotated files: read them with `docker compose logs`, not in Grafana. Five alert rules exist — Synapse process down, Synapse CPU saturated, push deliveries failing, Sygnal down, Cloudflare Calls unreachable.
+**Alerts.** Urgent (max priority): a Synapse process down, Postgres down, a disk under 10% free. Warning: Synapse CPU saturated; push deliveries to Sygnal failing; Sygnal down; APNs or FCM refusing every push for 30 minutes (the `.p8` key or the service account); Cloudflare Calls unreachable; three iOS rings failing in 30 minutes; a zuno_push feature not serving; signup at `daily_cap`; three signup failures in 30 minutes; a disk under 20% free; host memory under 10%; an OOM kill; no backup in 26 hours; a Postgres transaction idle for over 5 minutes; node-exporter, postgres-exporter or synapse-usage-exporter down.
+
+**Account and report notifications.** Besides alerts, ntfy gets *New account* (low priority) when someone registers and *New report* (high priority) when a message, room or user is reported, about a minute later and once per change: "A new account was created.", "2 new accounts were created.", "A room was reported. Review it in the admin client." They never say who registered, who reported whom, or why. postgres-exporter reads only counts, through two functions that return nothing else (`monitoring/postgres/monitor-role.sql`, `queries.yaml`), and the alert rules compare them with a minute earlier (`rules.yaml`, group *events*). They send no resolved message, and the *Alerts* list on *Zuno overview* leaves them out. ntfy learns only that and when an account or a report was created; if `NTFY_URL` is ntfy.sh, that is a third party. Review reports with the admin client (*Administration*).
+
+**What is not covered.** There is no log collection and no error tracker, and nothing watches Redis, nginx or the public URL, so no alert can fire on them. Logs live only in Docker's rotated files: read them with `docker compose logs`, not in Grafana. node-exporter sits on the internal monitoring network, so it reports no host network traffic: its network collectors are off.
 
 **Enable**, with the base stack running:
 1. `.env`: fill in the Monitoring block from `.env.example`, and `COMPOSE_PROFILES=push,monitoring`.
 2. `docker compose up -d --wait`.
-3. `scripts/smoke-test.sh monitoring`: must report 0 failures. In Grafana, *Alerting* > *Contact points* > *ntfy-urgent* > *Test* must reach your phone.
+3. Run `scripts/backup.sh` once if cron has not yet, so there is a backup timestamp to read.
+4. `scripts/smoke-test.sh monitoring`: must report 0 failures. In Grafana, *Alerting* > *Contact points* > *ntfy-urgent* > *Test* must reach your phone.
 
-**Changing things.** Dashboards and alert rules are files in `monitoring/grafana/`; Grafana refuses UI edits to them. Edit the file, then `docker compose restart grafana`. The Synapse dashboard and rules come from Synapse's `contrib/` at the pinned version; *Zuno overview*, *Zuno calls*, *Zuno Sygnal* and *Zuno usage* are written here, against the metric names those services actually export.
+**Changing things.** Dashboards and alert rules are files in `monitoring/grafana/`; Grafana refuses UI edits to them. Edit the file, then `docker compose restart grafana`. The Synapse dashboard and rules come from Synapse's `contrib/` at the pinned version, with two local edits to the dashboard: its deploy markers and version panel filter on this stack's `master|generic_worker` jobs instead of contrib's `synapse`, which matched nothing, and it carries the *Zuno* menu. The other dashboards are written here, against the metric names those services actually export. Two values are copied from other files and must move with them: *Zuno signup*'s and *Zuno overview*'s signup tiles assume `daily_cap: 100` (`homeserver.yaml`), and *Zuno host*'s pool limit assumes `cp_max: 10`.
 
 **Limits.**
 - Nothing pages if the host itself or Grafana is down, and nothing probes the public URL from outside: the outside uptime check in *Before launch* is not optional.
-- `scripts/backup.sh` still writes `/var/lib/zuno/metrics/zuno_backup.prom`, but nothing reads it, so a missed backup does not alert.
+- The backup alert reads `/var/lib/zuno/metrics/zuno_backup.prom`, which `scripts/backup.sh` writes last. If cron sets another `METRICS_DIR`, change node-exporter's `--collector.textfile.directory` to match, or the alert fires every day.
+- Signup, ring and push counters exist in Prometheus only from their first scrape, so the first event of each kind after a Synapse restart can go uncounted: the signup tiles are approximate, and the count-based alerts can need one failure more.
 - Not backed up: Prometheus data. Grafana's dashboards and rules are the files above.
 - Usage totals move once per report, so *Zuno usage* steps every 3 hours. The exporter keeps them in memory: after it restarts the dashboard reads *No data* until the next report, up to 3 hours later (5 minutes if `synapse-background` restarted too). The *Last report* tile shows their age. No alert watches them.
 - With the monitoring profile off the exporter is not running, and `synapse-background` logs `Error reporting stats` every 3 hours. If monitoring stays off, set `report_stats: false` in `homeserver.yaml`.
 - *Zuno calls* reads *No data* until the app has placed a call: the module's own series and Synapse's per-servlet ones exist only once a request has been served. Its alert matches only those series, so it stays silent until then.
 - nginx is not scraped: the stock image exports no metrics. Its access log (`docker compose logs nginx`) is the only record of what the edge answered.
+- synapse-usage-exporter's image is amd64 only. On an arm64 host such as a Raspberry Pi it runs only under QEMU emulation, and without it *Zuno usage* reads *No data* and the exporter-down alert fires.
 
-**Adding a piece back.** Each removed service was self-contained: a container in `docker-compose.yml`, a scrape job in `monitoring/prometheus/prometheus.yml`, and its alert rules in `monitoring/grafana/provisioning/alerting/rules.yaml`. node-exporter is the highest value of them — 64 MB, and it alone restores disk, swap, OOM-kill and backup-overdue alerting.
+**Adding a piece.** Each monitored service is self-contained: a container in `docker-compose.yml`, a scrape job in `monitoring/prometheus/prometheus.yml`, its dashboard in `monitoring/grafana/dashboards/` (tagged `zuno`, so it joins the *Zuno* menu), and its alert rules in `monitoring/grafana/provisioning/alerting/rules.yaml`.
 
 ## Administration
 
@@ -143,12 +165,12 @@ Values marked `SIZING` in `postgresql.conf`, `homeserver.yaml` and `sygnal.yaml`
 | 2 | ~10k | 4 vCPU / 8 GB | 2GB / 4GB / 16MB / 512MB / 256MB / 4GB | 1G / 768M, 1.5 | |
 | 3 | ~30k | 8 vCPU / 16 GB | 4GB / 8GB / 16MB / 1GB / 512MB / 8GB, `autovacuum_max_workers = 4` | 1536M / 1G, 2.0 | Step 2 below; Sygnal `max_connections: 50` |
 
-Idle, the tier-1 stack uses about 500 MB: about 115 MB per Synapse process, 140 MB for Postgres. The monitoring profile adds roughly 400 MB idle, capped at 1 GB, and the kernel kills it first under memory pressure; tier 1 fits on 4 GB with it on. Only the first signal below is visible in Grafana — the rest are manual checks now that there are no host or database exporters and no log collection.
+Idle, the tier-1 stack uses about 500 MB: about 115 MB per Synapse process, 140 MB for Postgres. The monitoring profile adds roughly 430 MB idle, capped at 1.1 GB, and the kernel kills it first under memory pressure; tier 1 fits on 4 GB with it on. All but the last signal below are in Grafana; slow queries need the Postgres log, since there is no log collection.
 
 **Signals to scale on:**
 - A Synapse container at ~100% CPU at peak (*Zuno overview*, and it alerts). Each Synapse process is one Python thread, so a bigger host does not speed it up; only moving work to another process does.
-- Postgres cache hit ratio under 99%: `select round(sum(blks_hit)*100.0/sum(blks_hit+blks_read),2) from pg_stat_database;`
-- Swap in use (`free -m`), or OOM kills (`dmesg`).
+- Postgres cache hit ratio under 99% (*Zuno host*).
+- Swap being read back in, or OOM kills (*Zuno host*; OOM kills alert).
 - Slow queries in the Postgres log, which logs anything over 500 ms: `docker compose logs postgres | grep duration:`. Or `pg_stat_statements` showing one query dominating.
 
 **Step 2: event persister.** Moves database writes for new events off the main process. No routing change needed.

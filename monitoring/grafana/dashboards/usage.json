@@ -6,7 +6,7 @@
   ],
   "timezone": "utc",
   "schemaVersion": 41,
-  "version": 1,
+  "version": 2,
   "editable": false,
   "refresh": "5m",
   "graphTooltip": 1,
@@ -20,6 +20,19 @@
   "annotations": {
     "list": []
   },
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "zuno"
+      ],
+      "title": "Zuno",
+      "type": "dashboards"
+    }
+  ],
   "panels": [
     {
       "type": "row",

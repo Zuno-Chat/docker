@@ -11,3 +11,19 @@ policies:
       - receiver: ntfy-urgent
         object_matchers:
           - [severity, =, urgent]
+      # New account and New report (rules.yaml, events): one message per new
+      # count, within seconds. Grouping by the count label keeps each alert in
+      # a group of its own, so a message never repeats the one before, which
+      # Grafana keeps firing for a minute or two after it is replaced.
+      - receiver: ntfy-account
+        object_matchers:
+          - [event, =, account]
+        group_by: [alertname, accounts]
+        group_wait: 10s
+        group_interval: 1m
+      - receiver: ntfy-report
+        object_matchers:
+          - [event, =, report]
+        group_by: [alertname, kind, filed]
+        group_wait: 10s
+        group_interval: 1m

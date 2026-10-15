@@ -6,8 +6,8 @@
 # Env: BACKUP_DIR         default /var/backups/zuno
 #      KEEP_DAYS          default 7
 #      BACKUP_UPLOAD_CMD  run after success, e.g. 'rclone sync /var/backups/zuno r2:zuno-backups'
-#      METRICS_DIR        default /var/lib/zuno/metrics (nothing reads it now;
-#                         a node-exporter textfile collector would)
+#      METRICS_DIR        default /var/lib/zuno/metrics, where node-exporter
+#                         reads the last success (monitoring profile)
 # A backup holds every server secret: keep it, and its off-host copy, private.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -20,7 +20,9 @@ work="$BACKUP_DIR/.partial-$stamp"
 mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
 
-docker compose exec -T postgres pg_dump -U synapse -d synapse -Fc >"$work/synapse.dump"
+# Not the monitoring schema: postgres-monitor-init recreates it, and its grants
+# name zuno_monitor, which a fresh database lacks, so a restore would fail.
+docker compose exec -T postgres pg_dump -U synapse -d synapse -Fc --exclude-schema=monitoring >"$work/synapse.dump"
 docker compose exec -T synapse tar -C /data -czf - . >"$work/synapse-data.tar.gz"
 
 # A dump that pg_restore cannot list, or an archive without the signing key,
@@ -36,9 +38,9 @@ if [ -n "${BACKUP_UPLOAD_CMD:-}" ]; then
   sh -c "$BACKUP_UPLOAD_CMD"
 fi
 
-# Kept for a returning node-exporter: no service scrapes it today, so nothing
-# alerts on a missed backup. Written last, so a failed upload counts as a
-# failed backup; world-readable, as node-exporter would run as nobody.
+# For node-exporter's textfile collector: the Backup overdue alert fires when
+# this is over 26 hours old. Written last, so a failed upload counts as a
+# failed backup; world-readable, as node-exporter runs as nobody.
 METRICS_DIR=${METRICS_DIR:-/var/lib/zuno/metrics}
 (
   umask 022

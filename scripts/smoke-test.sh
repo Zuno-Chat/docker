@@ -5,9 +5,10 @@
 #   scripts/smoke-test.sh full     on the server: also registers a throwaway
 #                                  user with an invite token, exercises it,
 #                                  then erases the user, room, media and token
-#   scripts/smoke-test.sh monitoring   on the server: Prometheus scrape targets
-#                                  and Grafana alert rules (no host exporters or
-#                                  logs, no error tracker — README.md, Monitoring)
+#   scripts/smoke-test.sh monitoring   on the server: Prometheus scrape targets,
+#                                  Postgres and backup metrics, Grafana
+#                                  dashboards and alert rules (README.md,
+#                                  Monitoring)
 # Env: BASE_URL       default https://api.zuno.chat
 #      WELLKNOWN_URL  default https://zuno.chat/.well-known/matrix/client
 #      CURL_EXTRA     extra curl flags, e.g. for a local rehearsal:
@@ -18,7 +19,7 @@ cd "$(dirname "$0")/.."
 . scripts/lib.sh
 
 mode=${1:-}
-case $mode in public | full | monitoring) ;; *) sed -n '2,15p' "$0"; exit 2 ;; esac
+case $mode in public | full | monitoring) ;; *) sed -n '2,16p' "$0"; exit 2 ;; esac
 BASE_URL=${BASE_URL:-https://api.zuno.chat}
 WELLKNOWN_URL=${WELLKNOWN_URL:-https://zuno.chat/.well-known/matrix/client}
 CURL_EXTRA=${CURL_EXTRA:-}
@@ -39,10 +40,29 @@ if [ "$mode" = monitoring ]; then
 print(" ".join(sorted(t["labels"].get("process") or t["labels"]["job"] for t in json.load(sys.stdin)["data"]["activeTargets"] if t["health"] != "up")))')
   expect "every scrape target up" "" "$down"
 
+  # promq <url-encoded PromQL>: the first result's value; "" if none.
+  promq() {
+    mon "http://localhost:9090/api/v1/query?query=$1" | python3 -c 'import sys, json
+r = json.load(sys.stdin)["data"]["result"]
+print(r[0]["value"][1] if r else "")'
+  }
+  expect "postgres-exporter logged in to Postgres" 1 "$(promq 'max%28pg_up%29')"
+  # One account count and three report counts (monitoring/postgres/queries.yaml).
+  expect "postgres-exporter counts accounts and reports" 4 \
+    "$(promq 'count%28%7B__name__%3D~%22zuno_accounts_registered%7Czuno_reports_filed%22%7D%29')"
+  # Absent until scripts/backup.sh has finished once on this host.
+  expect "node-exporter reads the backup timestamp" 1 \
+    "$(promq 'count%28zuno_backup_last_success_timestamp_seconds%29')"
+
   # The admin password stays inside the container.
-  rules=$(docker compose exec -T grafana sh -c 'wget -qO- --header "Authorization: Basic $(printf "admin:%s" "$GF_SECURITY_ADMIN_PASSWORD" | base64)" http://localhost:3000/api/v1/provisioning/alert-rules' |
-    python3 -c 'import sys, json; print(len(json.load(sys.stdin)))')
-  expect "Grafana loaded every alert rule" "$(grep -c '^      - uid:' monitoring/grafana/provisioning/alerting/rules.yaml)" "$rules"
+  graf() {
+    docker compose exec -T grafana sh -c 'wget -qO- --header "Authorization: Basic $(printf "admin:%s" "$GF_SECURITY_ADMIN_PASSWORD" | base64)" "http://localhost:3000$1"' sh "$1" |
+      python3 -c 'import sys, json; print(len(json.load(sys.stdin)))'
+  }
+  expect "Grafana loaded every dashboard" "$(ls monitoring/grafana/dashboards/*.json | wc -l)" \
+    "$(graf '/api/search?type=dash-db&folderUIDs=zuno')"
+  expect "Grafana loaded every alert rule" "$(grep -c '^      - uid:' monitoring/grafana/provisioning/alerting/rules.yaml)" \
+    "$(graf /api/v1/provisioning/alert-rules)"
 
   echo "$fails failure(s)"
   exit $((fails > 0))

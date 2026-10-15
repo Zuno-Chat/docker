@@ -1,9 +1,17 @@
 # Alerts go to one ntfy topic (NTFY_URL in .env). ntfy's inline template turns
-# Grafana's webhook JSON into "[firing] <alert>" plus one summary line per
-# alert; its built-in grafana template would ignore the priority. The t and m
+# Grafana's webhook JSON into "[firing] <alert>" plus one line per alert: its
+# summary, then a link to the rule's panel (its __dashboardUid__ and
+# __panelId__ annotations in rules.yaml) that opens through the SSH tunnel.
+# Its built-in grafana template would ignore the priority. The t and m
 # parameters, decoded:
 #   t=[{{.status}}] {{.commonLabels.alertname}}
-#   m={{range .alerts}}{{.annotations.summary}}<newline>{{end}}
+#   m={{range .alerts}}{{.annotations.summary}}{{if .panelURL}} {{.panelURL}}{{end}}<newline>{{end}}
+#
+# ntfy-account and ntfy-report carry the event rules (rules.yaml, events): no
+# resolved message, a plain title, and only the alerts that just fired, since
+# the one they replace arrives in the same payload as resolved:
+#   t={{.commonLabels.alertname}}
+#   m={{range .alerts}}{{if eq .status "firing"}}{{.annotations.summary}}<newline>{{end}}{{end}}
 apiVersion: 1
 
 contactPoints:
@@ -13,7 +21,7 @@ contactPoints:
       - uid: ntfy
         type: webhook
         settings:
-          url: ${NTFY_URL}?tpl=yes&priority=3&tags=warning&t=%5B%7B%7B.status%7D%7D%5D%20%7B%7B.commonLabels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7B.annotations.summary%7D%7D%0A%7B%7Bend%7D%7D
+          url: ${NTFY_URL}?tpl=yes&priority=3&tags=warning&t=%5B%7B%7B.status%7D%7D%5D%20%7B%7B.commonLabels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7B.annotations.summary%7D%7D%7B%7Bif%20.panelURL%7D%7D%20%7B%7B.panelURL%7D%7D%7B%7Bend%7D%7D%0A%7B%7Bend%7D%7D
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: ${NTFY_TOKEN}
@@ -24,7 +32,31 @@ contactPoints:
       - uid: ntfy-urgent
         type: webhook
         settings:
-          url: ${NTFY_URL}?tpl=yes&priority=5&tags=rotating_light&t=%5B%7B%7B.status%7D%7D%5D%20%7B%7B.commonLabels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7B.annotations.summary%7D%7D%0A%7B%7Bend%7D%7D
+          url: ${NTFY_URL}?tpl=yes&priority=5&tags=rotating_light&t=%5B%7B%7B.status%7D%7D%5D%20%7B%7B.commonLabels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7B.annotations.summary%7D%7D%7B%7Bif%20.panelURL%7D%7D%20%7B%7B.panelURL%7D%7D%7B%7Bend%7D%7D%0A%7B%7Bend%7D%7D
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: ${NTFY_TOKEN}
+
+  - orgId: 1
+    name: ntfy-account
+    receivers:
+      - uid: ntfy-account
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: ${NTFY_URL}?tpl=yes&priority=2&tags=bust_in_silhouette&t=%7B%7B.commonLabels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7Bif%20eq%20.status%20%22firing%22%7D%7D%7B%7B.annotations.summary%7D%7D%0A%7B%7Bend%7D%7D%7B%7Bend%7D%7D
+          httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: ${NTFY_TOKEN}
+
+  - orgId: 1
+    name: ntfy-report
+    receivers:
+      - uid: ntfy-report
+        type: webhook
+        disableResolveMessage: true
+        settings:
+          url: ${NTFY_URL}?tpl=yes&priority=4&tags=triangular_flag_on_post&t=%7B%7B.commonLabels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7Bif%20eq%20.status%20%22firing%22%7D%7D%7B%7B.annotations.summary%7D%7D%0A%7B%7Bend%7D%7D%7B%7Bend%7D%7D
           httpMethod: POST
           authorization_scheme: Bearer
           authorization_credentials: ${NTFY_TOKEN}
