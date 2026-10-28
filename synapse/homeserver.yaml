@@ -334,7 +334,10 @@ server_notices:
 modules:
   # Calls (docs/design.md in the zuno_calls repo): proxies Cloudflare Calls
   # signaling and mints TURN credentials under
-  # /_synapse/client/zuno/calls/cloudflare/, behind Synapse's own token check.
+  # /_synapse/client/zuno/calls/cloudflare/, and removes someone from a call at
+  # /_synapse/client/zuno/calls/remove, behind Synapse's own token check.
+  # max_call_participants stays at its default, 6. Session owners and removals
+  # live in its own zuno_calls_* tables, which it creates on first use.
   # app_id and turn_key_id are identifiers, not secrets. Empty values fail
   # config parsing, so Synapse refuses to start until both are set.
   - module: zuno_calls.ZunoCalls
@@ -379,9 +382,10 @@ modules:
         per_second: 0.001
         burst: 3
 
-  # iOS calls (README.md in the zuno_push repo): rings a closed iPhone with a
-  # sealed VoIP push through Sygnal, and serves the notification extension's
-  # API under /_synapse/client/zuno/push/v1/. It creates its own zuno_push_*
+  # Call rings (README.md in the zuno_push repo): rings a closed app with a
+  # sealed push through Sygnal (PushKit VoIP on iOS, FCM on Android), and
+  # serves the iOS notification extension's API under
+  # /_synapse/client/zuno/push/v1/. It creates its own zuno_push_*
   # tables in this database on start. Its poller and ring sender run on
   # background_worker (run_background_tasks_on); POST test only works on the
   # pusher instance, so nginx routes that one path to background_worker too.
@@ -396,3 +400,5 @@ modules:
       # sandbox token is refused (400) until im.zuno.chat.ios.dev.voip is
       # added there and here.
       voip_app_ids: ["im.zuno.chat.ios.voip"]
+      # fcm_app_ids stays at its default, ["im.zuno.chat.android"], the FCM app
+      # in sygnal.yaml. Unset so zuno_push before v0.3.0 can still read this.
