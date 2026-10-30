@@ -7,7 +7,9 @@ providers:
     folder: Zuno
     folderUid: zuno
     type: file
-    disableDeletion: true
+    # false, so removing a dashboard's file removes the dashboard; true would
+    # keep it in Grafana as an ordinary, unprovisioned dashboard.
+    disableDeletion: false
     allowUiUpdates: false
     options:
       path: /etc/grafana/dashboards
