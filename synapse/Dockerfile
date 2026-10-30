@@ -7,7 +7,7 @@
 FROM ghcr.io/zuno-chat/zuno-calls-wheel:v0.2.0 AS zuno-calls
 FROM ghcr.io/zuno-chat/zuno-register-wheel:v0.1.1 AS zuno-register
 FROM ghcr.io/zuno-chat/zuno-push-wheel:v0.3.0 AS zuno-push
-FROM ghcr.io/element-hq/synapse:v1.163.0
+FROM ghcr.io/element-hq/synapse:v1.164.0
 RUN --mount=type=bind,from=zuno-calls,target=/wheels/zuno-calls \
     --mount=type=bind,from=zuno-register,target=/wheels/zuno-register \
     --mount=type=bind,from=zuno-push,target=/wheels/zuno-push \
