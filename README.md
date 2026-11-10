@@ -73,6 +73,7 @@ MAS owns sign-up, sign-in, passwords and sessions, at `auth.zuno.chat`. Sign-up 
 - [ ] The privacy policy names what MAS adds: email addresses kept here and sent through Brevo, Turnstile on sign-up, and the IP addresses and user agents MAS keeps per session.
 - [ ] `https://zuno.chat/.well-known/matrix/client` names the tile route: `"im.zuno.tiles": {"url": "https://api.zuno.chat/maps/{z}/{x}/{y}", "attribution": "MapTiler © OpenStreetMap contributors"}`. The app reads a map with `url`, not a bare string, and falls back to a plain grid otherwise.
 - [ ] `MAPTILER_API_KEY` is restricted to the User-Agent `im.zuno.chat` at MapTiler, and any key that was ever published in the well-known is revoked.
+- [ ] No Cloudflare Cache Rule overrides the origin's cache headers on `api.zuno.chat/maps/`: nginx marks tiles `private`, because MapTiler allows only per-user caches, and a shared Cloudflare copy would also serve tiles to clients that aren't the app. `scripts/smoke-test.sh public` catches it.
 - [ ] A real push reaches a phone while the app is in the background.
 - [ ] Backups run from cron, the first set has reached off-host storage, and a restore has been tested (below).
 - [ ] Monitoring is on, `scripts/smoke-test.sh monitoring` reports 0 failures, and an alert has reached your phone.

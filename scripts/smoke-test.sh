@@ -87,8 +87,8 @@ expect "calls module reachable" 401 \
 expect "auth metadata names $AUTH_URL" "$AUTH_URL/" \
   "$(pub "$BASE_URL/_matrix/client/v1/auth_metadata" | json issuer)"
 expect "sign-in page served" 200 "$(code "$AUTH_URL/login")"
-css=$(pub "$AUTH_URL/login" | grep -o '/assets/zuno-[0-9a-f]*/zuno\.css' | head -n 1)
-expect "sign-in page wears the Zuno theme" 200 "$([ -n "$css" ] && code "$AUTH_URL$css")"
+theme=$(pub "$AUTH_URL/login" | grep -o 'zuno-[0-9a-f]\{12\}' | head -n 1)
+expect "sign-in page wears the Zuno theme" 200 "$([ -n "$theme" ] && code "$AUTH_URL/assets/$theme/zuno.css")"
 case $(pub "$BASE_URL/_matrix/client/v3/login") in
   *'"m.login.password"'*) pass "password sign-in offered to older apps" ;;
   *) fail "password sign-in offered to older apps" ;;
@@ -135,7 +135,7 @@ if [ -n "$mas_uid" ]; then pass "create user in MAS"; else fail "create user in 
 mas_api POST "/api/admin/v1/users/$mas_uid/set-password" \
   "{\"password\": \"$pw\", \"skip_password_check\": true}" >/dev/null
 
-login=$(pub -X POST "$BASE_URL/_matrix/client/v3/login" \
+login=$(pub -X POST "$BASE_URL/_matrix/client/v3/login" -H 'Content-Type: application/json' \
   -d "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"$user\"},\"password\":\"$pw\",\"refresh_token\":true}")
 at=$(json access_token <<<"$login")
 rt=$(json refresh_token <<<"$login")
@@ -147,7 +147,7 @@ else
   fail "access token lasts up to a day (got ${ttl:-nothing} ms)"
 fi
 
-at=$(pub -X POST "$BASE_URL/_matrix/client/v3/refresh" -d "{\"refresh_token\":\"$rt\"}" | json access_token)
+at=$(pub -X POST "$BASE_URL/_matrix/client/v3/refresh" -H 'Content-Type: application/json' -d "{\"refresh_token\":\"$rt\"}" | json access_token)
 if [ -n "$at" ]; then pass "refresh token renews access"; else fail "refresh token renews access"; exit 1; fi
 
 auth=(-H "Authorization: Bearer $at")
