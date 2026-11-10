@@ -1,0 +1,4 @@
+\getenv pw DB_PASSWORD
+SELECT 'CREATE ROLE mas' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mas')\gexec
+ALTER ROLE mas WITH LOGIN PASSWORD :'pw';
+SELECT 'CREATE DATABASE mas OWNER mas' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'mas')\gexec

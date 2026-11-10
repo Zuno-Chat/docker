@@ -7,14 +7,14 @@ set -eu
 
 mkdir -p /data/secrets /data/media
 
-# The zuno_calls and zuno_register blocks in homeserver.yaml read these.
-# Rewritten on every start: .env is the source of truth. Unset stops here,
-# before Synapse starts.
+# The zuno_calls and matrix_authentication_service blocks in homeserver.yaml
+# read these. Rewritten on every start: .env is the source of truth. Unset
+# stops here, before Synapse starts.
 printf '%s' "${CF_CALLS_APP_SECRET:?set in .env}" > /data/secrets/cf_calls_app_secret
 printf '%s' "${CF_TURN_API_TOKEN:?set in .env}" > /data/secrets/cf_turn_api_token
-printf '%s' "${BREVO_API_KEY:?set in .env}" > /data/secrets/brevo_api_key
+printf '%s' "${MAS_SHARED_SECRET:?set in .env}" > /data/secrets/mas_shared_secret
 
-for name in macaroon_secret_key form_secret registration_shared_secret worker_replication_secret; do
+for name in macaroon_secret_key form_secret worker_replication_secret; do
   f="/data/secrets/$name"
   # No trailing newline: Synapse reads these files verbatim.
   [ -s "$f" ] || head -c 32 /dev/urandom | base64 | tr -d '\n' > "$f"

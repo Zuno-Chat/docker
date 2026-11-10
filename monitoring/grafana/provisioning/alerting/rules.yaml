@@ -3,9 +3,9 @@
 # Their folder is not "Zuno": Grafana would create a second folder by that name
 # beside the dashboards'.
 #
-# Every rule reads Prometheus: Synapse (the zuno_calls, zuno_register and
-# zuno_push modules included), Sygnal, node-exporter (the host and
-# scripts/backup.sh's last success) and postgres-exporter. Nothing covers
+# Every rule reads Prometheus: Synapse (the zuno_calls and zuno_push modules
+# included), MAS, Sygnal, node-exporter (the host and scripts/backup.sh's last
+# success) and postgres-exporter. Nothing covers
 # Redis, nginx or the public endpoint (README.md, Monitoring).
 #
 # The __dashboardUid__ and __panelId__ annotations tie a rule to the panel that
@@ -61,6 +61,26 @@ groups:
             datasourceUid: prometheus
             relativeTimeRange: {from: 600, to: 0}
             model: {refId: A, instant: true, expr: 'max(pg_up)'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+      - uid: mas-down
+        title: MAS down
+        condition: C
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        labels: {severity: urgent}
+        annotations:
+          __dashboardUid__: zuno-overview
+          __panelId__: "15"
+          summary: "MAS is not answering metrics scrapes: Synapse cannot check any access token, so the whole API refuses requests and nobody can sign in."
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'up{job="mas"}'}
           - refId: C
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
@@ -260,46 +280,25 @@ groups:
             datasourceUid: __expr__
             model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
 
-      # Resolves 15 minutes after the last refusal.
-      - uid: signup-cap-reached
-        title: Signup daily cap reached
+      - uid: mas-email-failing
+        title: MAS emails failing
         condition: C
         for: 0s
         noDataState: OK
         execErrState: Alerting
         labels: {severity: warning}
         annotations:
-          __dashboardUid__: zuno-signup
-          __panelId__: "2"
-          summary: "Signup hit daily_cap: new users are refused a code until 00:00 UTC. Raise daily_cap in homeserver.yaml to let them in."
-        data:
-          - refId: A
-            datasourceUid: prometheus
-            relativeTimeRange: {from: 900, to: 0}
-            model: {refId: A, instant: true, expr: 'sum(increase(zuno_register_requests_total{result="global_limited"}[15m]))'}
-          - refId: C
-            datasourceUid: __expr__
-            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
-
-      - uid: signup-failing
-        title: Signup codes failing
-        condition: C
-        for: 0s
-        noDataState: OK
-        execErrState: Alerting
-        labels: {severity: warning}
-        annotations:
-          __dashboardUid__: zuno-signup
-          __panelId__: "7"
-          summary: "{{ printf \"%.0f\" $values.A.Value }} signup requests failed in 30 minutes (Brevo, Redis or the database): new users get no code."
+          __dashboardUid__: zuno-auth
+          __panelId__: "10"
+          summary: "{{ printf \"%.0f\" $values.A.Value }} MAS emails failed for good in 30 minutes, after their retries (Brevo's SMTP relay or BREVO_SMTP_KEY): new users get no sign-up code and nobody can reset a password."
         data:
           - refId: A
             datasourceUid: prometheus
             relativeTimeRange: {from: 1800, to: 0}
-            model: {refId: A, instant: true, expr: 'sum(increase(zuno_register_requests_total{result=~"brevo_error|redis_error|store_error"}[30m]))'}
+            model: {refId: A, instant: true, expr: 'sum(increase(job_process_duration_milliseconds_count{job_queue_name=~"send-email-authentication-code|send-account-recovery-email|verify-email", job_result="failed", job_decision!="retry"}[30m]))'}
           - refId: C
             datasourceUid: __expr__
-            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [2]}}]}
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
 
       - uid: disk-filling
         title: Disk filling

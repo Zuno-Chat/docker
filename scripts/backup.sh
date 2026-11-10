@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Backs up the Postgres database and the synapse-data volume (signing key,
-# secrets, media) into BACKUP_DIR/<timestamp>/, verifies both, prunes old
-# sets, then optionally copies them off-host. Run on the server as root, e.g.
+# Backs up the synapse and mas databases and the synapse-data (signing key,
+# secrets, media) and mas-data (MAS's encryption and signing keys) volumes into
+# BACKUP_DIR/<timestamp>/, verifies all four, prunes old sets, then optionally
+# copies them off-host. Run on the server as root, e.g.
 #   15 3 * * * /opt/zuno/scripts/backup.sh >>/var/log/zuno-backup.log 2>&1
 # Env: BACKUP_DIR         default /var/backups/zuno
 #      KEEP_DAYS          default 7
@@ -24,11 +25,16 @@ trap 'rm -rf "$work"' EXIT
 # name zuno_monitor, which a fresh database lacks, so a restore would fail.
 docker compose exec -T postgres pg_dump -U synapse -d synapse -Fc --exclude-schema=monitoring >"$work/synapse.dump"
 docker compose exec -T synapse tar -C /data -czf - . >"$work/synapse-data.tar.gz"
+docker compose exec -T postgres pg_dump -U synapse -d mas -Fc >"$work/mas.dump"
+docker compose exec -T mas tar -C /data -czf - . >"$work/mas-data.tar.gz"
 
-# A dump that pg_restore cannot list, or an archive without the signing key,
-# is not a backup.
+# A dump that pg_restore cannot list, or an archive without its keys, is not a
+# backup.
 docker compose exec -T postgres pg_restore --list <"$work/synapse.dump" >/dev/null
 tar -tzf "$work/synapse-data.tar.gz" | grep -qx './signing.key'
+docker compose exec -T postgres pg_restore --list <"$work/mas.dump" >/dev/null
+tar -tzf "$work/mas-data.tar.gz" | grep -qx './keys.yaml'
+tar -tzf "$work/mas-data.tar.gz" | grep -qx './password_pepper'
 
 mv "$work" "$BACKUP_DIR/$stamp"
 trap - EXIT

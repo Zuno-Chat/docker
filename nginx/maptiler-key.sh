@@ -1,6 +1,6 @@
 #!/bin/sh
-# Runs before nginx starts, like push-allow.sh (docker-compose.yml mounts it
-# into /docker-entrypoint.d/). Writes MAPTILER_API_KEY (.env) as the variable
+# Runs before nginx starts (docker-compose.yml mounts it into
+# /docker-entrypoint.d/). Writes MAPTILER_API_KEY (.env) as the variable
 # the /maps/ route in nginx.conf appends to each MapTiler request. Only the
 # master process reads config, as root, so the file is root-only. A MapTiler
 # key is letters and digits: anything else stops the container rather than be

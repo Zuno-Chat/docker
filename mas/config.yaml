@@ -1,0 +1,107 @@
+http:
+  public_base: https://auth.zuno.chat/
+  listeners:
+    - name: web
+      resources:
+        - name: discovery
+        - name: human
+        - name: oauth
+        - name: compat
+        - name: graphql
+        - name: assets
+      binds:
+        - address: "[::]:8080"
+    - name: internal
+      resources:
+        - name: health
+        - name: prometheus
+        - name: adminapi
+      binds:
+        - address: "[::]:8081"
+
+database:
+  host: postgres
+  port: 5432
+  username: mas
+  database: mas
+  ssl_mode: disable
+  max_connections: 10
+
+matrix:
+  kind: synapse
+  homeserver: zuno.chat
+  endpoint: http://synapse:8008/
+
+email:
+  from: '"Zuno" <no-reply@zuno.chat>'
+  transport: smtp
+  mode: starttls
+  hostname: smtp-relay.brevo.com
+  port: 587
+
+passwords:
+  enabled: true
+  minimum_complexity: 3
+  schemes:
+    - version: 1
+      algorithm: bcrypt
+      unicode_normalization: true
+    - version: 2
+      algorithm: argon2id
+      secret_file: /data/password_pepper
+
+account:
+  password_registration_enabled: true
+  password_registration_email_required: true
+  password_registration_token_required: false
+  password_recovery_enabled: true
+  password_change_allowed: true
+  email_change_allowed: true
+  displayname_change_allowed: true
+  account_deactivation_allowed: true
+  login_with_email_allowed: false
+
+captcha:
+  service: cloudflare_turnstile
+
+oauth:
+  device_code_grant_enabled: false
+
+rate_limiting:
+  login:
+    per_ip:
+      burst: 5
+      per_second: 0.05
+    per_account:
+      burst: 5
+      per_second: 0.05
+
+branding:
+  service_name: Zuno
+  tos_uri: https://zuno.chat/terms
+  policy_uri: https://zuno.chat/privacy
+
+clients:
+  - client_id: 01M6KQD7M2ZZ5FC1K5DV98698S
+    client_auth_method: client_secret_basic
+    client_secret_file: /data/scripts_client_secret
+
+policy:
+  data:
+    admin_clients:
+      - 01M6KQD7M2ZZ5FC1K5DV98698S
+    registration:
+      allowed_usernames:
+        regexes:
+          - "^(?:[a-z][a-z0-9._]*|[0-9.][a-z0-9._]*[a-z][a-z0-9._]*)$"
+      banned_usernames:
+        literals: [abuse, contact, help, hostmaster, info, matrix, mod, noreply, notices, postmaster, root, security, staff, support, synapse, system, team, webmaster]
+        prefixes: [admin, moderator, official, zuno]
+        suffixes: [admin, official]
+
+telemetry:
+  metrics:
+    exporter: prometheus
+
+experimental:
+  compat_token_ttl: 86400

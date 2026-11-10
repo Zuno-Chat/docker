@@ -1,0 +1,73 @@
+@media not all and (prefers-contrast: more) {
+  :root {
+    --zuno-primary: #8a5a00;
+    --zuno-on-primary: #ffffff;
+    --zuno-surface: #fbf8f3;
+    --zuno-surface-low: #f6f2ea;
+    --zuno-surface-high: #ebe5da;
+    --zuno-on-surface: #1f1a12;
+    --zuno-on-surface-variant: #696151;
+    --zuno-outline: #8f8672;
+    --zuno-outline-variant: #e7e0d2;
+    --zuno-secondary-container: #f6ebd6;
+    --zuno-on-secondary-container: #1f1a12;
+
+    --cpd-color-theme-bg: var(--zuno-surface);
+    --cpd-color-bg-subtle-primary: var(--zuno-surface-high);
+    --cpd-color-bg-subtle-secondary: var(--zuno-surface-low);
+
+    --cpd-color-text-primary: var(--zuno-on-surface);
+    --cpd-color-text-secondary: var(--zuno-on-surface-variant);
+    --cpd-color-text-action-primary: var(--zuno-on-surface);
+    --cpd-color-icon-primary: var(--zuno-on-surface);
+    --cpd-color-icon-secondary: var(--zuno-on-surface-variant);
+
+    --cpd-color-bg-action-primary-rest: var(--zuno-primary);
+    --cpd-color-bg-action-primary-hovered: color-mix(in srgb, var(--zuno-primary) 88%, var(--zuno-on-surface));
+    --cpd-color-bg-action-primary-pressed: color-mix(in srgb, var(--zuno-primary) 76%, var(--zuno-on-surface));
+    --cpd-color-text-on-solid-primary: var(--zuno-on-primary);
+
+    --cpd-color-text-action-accent: var(--zuno-primary);
+    --cpd-color-bg-accent-rest: var(--zuno-primary);
+    --cpd-color-bg-accent-hovered: color-mix(in srgb, var(--zuno-primary) 88%, var(--zuno-on-surface));
+    --cpd-color-bg-accent-pressed: color-mix(in srgb, var(--zuno-primary) 76%, var(--zuno-on-surface));
+    --cpd-color-bg-accent-selected: color-mix(in srgb, var(--zuno-primary) 16%, transparent);
+    --cpd-color-border-accent-primary: var(--zuno-primary);
+    --cpd-color-border-accent-subtle: color-mix(in srgb, var(--zuno-primary) 50%, var(--zuno-surface));
+    --cpd-color-icon-accent-primary: var(--zuno-primary);
+    --cpd-color-icon-accent-tertiary: var(--zuno-primary);
+    --cpd-color-bg-badge-accent: var(--zuno-secondary-container);
+    --cpd-color-text-badge-accent: var(--zuno-on-secondary-container);
+
+    --cpd-color-border-focused: var(--zuno-primary);
+    --cpd-color-border-interactive-primary: var(--zuno-outline);
+    --cpd-color-border-interactive-secondary: var(--zuno-outline-variant);
+    --cpd-color-border-interactive-hovered: var(--zuno-on-surface-variant);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --zuno-primary: #f2b95e;
+      --zuno-on-primary: #2a1e05;
+      --zuno-surface: #201d18;
+      --zuno-surface-low: #29251f;
+      --zuno-surface-high: #403b31;
+      --zuno-on-surface: #f5efe6;
+      --zuno-on-surface-variant: #bdb4a4;
+      --zuno-outline: #968c79;
+      --zuno-outline-variant: #555042;
+      --zuno-secondary-container: #453619;
+      --zuno-on-secondary-container: #f5efe6;
+    }
+  }
+}
+
+.zuno-logo {
+  align-self: center;
+}
+
+.zuno-logo img {
+  display: block;
+  height: 40px;
+  width: auto;
+}

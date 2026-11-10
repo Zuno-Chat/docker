@@ -1,6 +1,6 @@
 # Zuno server: Cloudflare -> nginx (TLS, public edge) -> Synapse main (with
-# the zuno_calls and zuno_register modules) + sync worker + background worker,
-# over Postgres and Redis; Sygnal for push.
+# the zuno_calls and zuno_push modules) + sync worker + background worker,
+# over Postgres and Redis; MAS for accounts and sign-in; Sygnal for push.
 # Per-host values and secrets: .env (from .env.example). Sizing and scaling
 # steps: README.md.
 #
@@ -36,10 +36,27 @@ x-bind: &bind
   bind:
     create_host_path: false
 
+x-mas: &mas
+  image: ghcr.io/zuno-chat/zuno-mas:latest
+  logging: *logging
+  volumes:
+    - <<: *bind
+      source: ./mas
+      target: /config
+    - mas-data:/data
+
+x-mas-env: &mas-env
+  SYNAPSE_SHARED_SECRET: "${MAS_SHARED_SECRET:?set in .env}"
+  DB_PASSWORD: "${MAS_POSTGRES_PASSWORD:?set in .env}"
+  SMTP_USERNAME: "${BREVO_SMTP_LOGIN:?set in .env}"
+  SMTP_PASSWORD: "${BREVO_SMTP_KEY:?set in .env}"
+  TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:?set in .env}"
+  TURNSTILE_SECRET: "${TURNSTILE_SECRET_KEY:?set in .env}"
+
 x-synapse: &synapse
   # The zuno-synapse build (.github/workflows/synapse-image.yml):
-  # homeserver.yaml loads zuno_calls and zuno_register, which the official
-  # image cannot import. latest is the newest master build; to hold or roll
+  # homeserver.yaml loads zuno_calls and zuno_push, which the official image
+  # cannot import. latest is the newest master build; to hold or roll
   # back, pin one of its sha-<commit> tags instead.
   image: ghcr.io/zuno-chat/zuno-synapse:latest
   restart: unless-stopped
@@ -48,12 +65,12 @@ x-synapse: &synapse
   environment:
     # homeserver.yaml has no database password; libpq reads this instead.
     PGPASSWORD: "${POSTGRES_PASSWORD:?set in .env}"
-    # bootstrap.sh writes these to /data/secrets for zuno_calls and
-    # zuno_register. On every Synapse service so a change in .env recreates
-    # them all.
+    # bootstrap.sh writes these to /data/secrets for zuno_calls and for
+    # Synapse's side of MAS. On every Synapse service so a change in .env
+    # recreates them all.
     CF_CALLS_APP_SECRET: "${CF_CALLS_APP_SECRET:-}"
     CF_TURN_API_TOKEN: "${CF_TURN_API_TOKEN:-}"
-    BREVO_API_KEY: "${BREVO_API_KEY:-}"
+    MAS_SHARED_SECRET: "${MAS_SHARED_SECRET:-}"
   volumes:
     - <<: *bind
       source: ./synapse
@@ -102,8 +119,6 @@ services:
       net.core.somaxconn: 8192
       net.ipv4.tcp_max_syn_backlog: 8192
     environment:
-      # push-allow.sh turns it into the push route's allow list.
-      PUSHER_ALLOWED_CIDRS: "${PUSHER_ALLOWED_CIDRS:?set in .env: this server's public IPs}"
       # maptiler-key.sh hands it to the /maps/ route.
       MAPTILER_API_KEY: "${MAPTILER_API_KEY:?set in .env: MapTiler API key}"
     volumes:
@@ -113,9 +128,6 @@ services:
         source: ./nginx
         target: /etc/nginx/zuno
       # The image runs every /docker-entrypoint.d/*.sh before nginx starts.
-      - <<: *bind
-        source: ./nginx/push-allow.sh
-        target: /docker-entrypoint.d/40-push-allow.sh
       - <<: *bind
         source: ./nginx/maptiler-key.sh
         target: /docker-entrypoint.d/41-maptiler-key.sh
@@ -135,6 +147,8 @@ services:
       synapse:
         condition: service_healthy
       synapse-sync:
+        condition: service_healthy
+      mas:
         condition: service_healthy
 
   postgres:
@@ -187,6 +201,61 @@ services:
       timeout: 3s
       retries: 12
 
+  mas-db-init:
+    container_name: zuno_mas-db-init
+    image: postgres:18-alpine
+    restart: "no"
+    logging: *logging
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'exec psql -h postgres -U synapse -d synapse -q -v ON_ERROR_STOP=1 -f /mas-db.sql'
+    environment:
+      PGPASSWORD: "${POSTGRES_PASSWORD:?set in .env}"
+      PGOPTIONS: -c client_min_messages=warning
+      DB_PASSWORD: "${MAS_POSTGRES_PASSWORD:?set in .env}"
+    volumes:
+      - <<: *bind
+        source: ./postgres/mas-db.sql
+        target: /mas-db.sql
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mas-init:
+    container_name: zuno_mas-init
+    <<: *mas
+    restart: "no"
+    user: "0"
+    entrypoint: ["/busybox/sh", "/config/init.sh", "/data"]
+    environment: *mas-env
+    network_mode: none
+
+  mas:
+    container_name: zuno_mas
+    <<: *mas
+    restart: unless-stopped
+    command: ["server"]
+    environment:
+      <<: *mas-env
+      MAS_CONFIG: /config/config.yaml:/data/keys.yaml:/data/env.yaml
+    networks: [edge, backend, monitoring]
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "/busybox/wget", "-qO/dev/null", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    depends_on:
+      mas-init:
+        condition: service_completed_successfully
+      mas-db-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
   # One-shot bootstrap (synapse/bootstrap.sh): signing key and secret files
   # on first run, and the module secrets from .env on every run.
   synapse-init:
@@ -217,6 +286,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      mas:
         condition: service_healthy
 
   synapse-sync:
@@ -500,5 +571,6 @@ networks:
 volumes:
   postgres-data:
   synapse-data:
+  mas-data:
   prometheus-data:
   grafana-data:

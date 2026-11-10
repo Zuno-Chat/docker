@@ -1,0 +1,23 @@
+name: mas-image
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - mas/Dockerfile
+      - mas/.dockerignore
+      - mas/theme/**
+      - .github/workflows/mas-image.yml
+      - .github/workflows/image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    uses: ./.github/workflows/image.yml
+    with:
+      image: zuno-mas
+      context: mas

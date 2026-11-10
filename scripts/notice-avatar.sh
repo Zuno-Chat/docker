@@ -21,9 +21,14 @@ esac
 
 trap admin_logout EXIT
 admin_login
-uri=$(docker compose exec -T synapse curl -sS -X POST \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: $type" --data-binary @- \
-  http://localhost:8008/_matrix/media/v3/upload <"$image" | json content_uri)
+docker compose cp "$image" synapse:/tmp/notice-avatar
+uri=$({
+  curl_opt header "Authorization: Bearer $ADMIN_TOKEN"
+  curl_opt header "Content-Type: $type"
+  curl_opt data-binary @/tmp/notice-avatar
+  curl_opt url http://localhost:8008/_matrix/media/v3/upload
+} | synapse_curl | json content_uri) || uri=""
+docker compose exec -T synapse rm -f /tmp/notice-avatar
 [ -n "$uri" ] || { echo "upload failed" >&2; exit 1; }
 # media_retention skips protected media. Without this it would delete the image
 # if no notice used it within local_media_lifetime of the upload.

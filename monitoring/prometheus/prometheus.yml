@@ -24,6 +24,10 @@ scrape_configs:
       # - targets: [synapse-event-persister:9000]
       #   labels: {job: generic_worker, index: "3", process: event_persister}
 
+  - job_name: mas
+    static_configs:
+      - targets: [mas:8081]
+
   # Runs only with COMPOSE_PROFILES=push; without it this target reports down.
   - job_name: sygnal
     static_configs:

@@ -414,7 +414,7 @@
     },
     {
       "type": "stat",
-      "title": "Signup codes today",
+      "title": "Sign-ups today",
       "id": 13,
       "datasource": {
         "type": "prometheus",
@@ -434,14 +434,6 @@
               {
                 "color": "text",
                 "value": null
-              },
-              {
-                "color": "orange",
-                "value": 80
-              },
-              {
-                "color": "red",
-                "value": 100
               }
             ]
           },
@@ -449,8 +441,8 @@
           "decimals": 0,
           "links": [
             {
-              "title": "Open Zuno signup",
-              "url": "/d/zuno-signup?${__url_time_range}"
+              "title": "Open Zuno auth",
+              "url": "/d/zuno-auth?${__url_time_range}"
             }
           ]
         },
@@ -476,12 +468,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "round(sum(increase(zuno_register_requests_total{result=~\"ok|resent\"}[$__range]))) or vector(0)"
+          "expr": "round(sum(increase(mas_user_password_registration_total[$__range]))) or vector(0)"
         }
       ],
       "timeFrom": "now/d",
       "hideTimeOverride": true,
-      "description": "Codes mailed since 00:00 UTC. daily_cap in homeserver.yaml is 100: at the cap every new signup is refused until midnight UTC. Keep these thresholds in step with it."
+      "description": "Accounts created on auth.zuno.chat since 00:00 UTC."
     },
     {
       "type": "stat",

@@ -1,28 +1,31 @@
 #!/usr/bin/env bash
 # End-to-end check of the running stack through its public URL.
-#   scripts/smoke-test.sh public   from any machine except the server (the push
-#                                  route is expected to refuse it)
-#   scripts/smoke-test.sh full     on the server: also registers a throwaway
-#                                  user with an invite token, exercises it,
-#                                  then erases the user, room, media and token
+#   scripts/smoke-test.sh public   from any machine
+#   scripts/smoke-test.sh full     on the server: also creates a throwaway
+#                                  user in MAS, signs it in with a password,
+#                                  exercises it, then erases the user, room
+#                                  and media
 #   scripts/smoke-test.sh monitoring   on the server: Prometheus scrape targets,
 #                                  Postgres and backup metrics, Grafana
 #                                  dashboards and alert rules (README.md,
 #                                  Monitoring)
 # Env: BASE_URL       default https://api.zuno.chat
+#      AUTH_URL       default https://auth.zuno.chat
 #      PUSH_URL       default https://push.zuno.chat
 #      WELLKNOWN_URL  default https://zuno.chat/.well-known/matrix/client
 #      CURL_EXTRA     extra curl flags, e.g. for a local rehearsal:
 #                     "-k --connect-to api.zuno.chat:443:127.0.0.1:18443
+#                      --connect-to auth.zuno.chat:443:127.0.0.1:18443
 #                      --connect-to push.zuno.chat:443:127.0.0.1:18443"
-#      ADMIN_USER / ADMIN_PASSWORD   full mode; prompted if unset
+#      ADMIN_USER     full mode: the MAS admin account; prompted if unset
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . scripts/lib.sh
 
 mode=${1:-}
-case $mode in public | full | monitoring) ;; *) sed -n '2,18p' "$0"; exit 2 ;; esac
+case $mode in public | full | monitoring) ;; *) sed -n '2,20p' "$0"; exit 2 ;; esac
 BASE_URL=${BASE_URL:-https://api.zuno.chat}
+AUTH_URL=${AUTH_URL:-https://auth.zuno.chat}
 PUSH_URL=${PUSH_URL:-https://push.zuno.chat}
 WELLKNOWN_URL=${WELLKNOWN_URL:-https://zuno.chat/.well-known/matrix/client}
 CURL_EXTRA=${CURL_EXTRA:-}
@@ -81,65 +84,79 @@ expect "federation blocked" 403 "$(code "$BASE_URL/_matrix/federation/v1/version
 expect "admin API not public" 403 "$(code "$BASE_URL/_synapse/admin/v1/server_version")"
 expect "calls module reachable" 401 \
   "$(code -X POST "$BASE_URL/_synapse/client/zuno/calls/cloudflare/turn/credentials")"
-# No address: refused before the rate limits count it, so no mail and no spend.
-expect "signup module reachable" 400 \
-  "$(code -X POST -H 'Content-Type: application/json' -d '{}' "$BASE_URL/_synapse/client/zuno/register/token")"
+expect "auth metadata names $AUTH_URL" "$AUTH_URL/" \
+  "$(pub "$BASE_URL/_matrix/client/v1/auth_metadata" | json issuer)"
+expect "sign-in page served" 200 "$(code "$AUTH_URL/login")"
+css=$(pub "$AUTH_URL/login" | grep -o '/assets/zuno-[0-9a-f]*/zuno\.css' | head -n 1)
+expect "sign-in page wears the Zuno theme" 200 "$([ -n "$css" ] && code "$AUTH_URL$css")"
+case $(pub "$BASE_URL/_matrix/client/v3/login") in
+  *'"m.login.password"'*) pass "password sign-in offered to older apps" ;;
+  *) fail "password sign-in offered to older apps" ;;
+esac
+expect "legacy registration refused" 403 "$(code -X POST "$BASE_URL/_matrix/client/v3/register" -d '{}')"
+expect "MAS admin API not public" 404 "$(code "$AUTH_URL/api/admin/v1/users")"
+expect "MAS metrics not public" 404 "$(code "$AUTH_URL/metrics")"
+expect "MAS health not public" 404 "$(code "$AUTH_URL/health")"
 # One tile, billed by MapTiler like any other.
 expect "map tiles served to the app" "200 image/png" \
   "$(pub -A 'Zuno/smoke-test (im.zuno.chat)' -o /dev/null -w '%{http_code} %{content_type}' "$BASE_URL/maps/0/0/0")"
 expect "map tiles refused to other clients" 403 "$(code "$BASE_URL/maps/0/0/0")"
+notify='{"notification":{"devices":[{"app_id":"smoke.test","pushkey":"smoke-test"}]}}'
 expect "push gateway open to every homeserver" '["smoke-test"]' \
-  "$(pub -X POST "$PUSH_URL/_matrix/push/v1/notify" \
-    -d '{"notification":{"devices":[{"app_id":"smoke.test","pushkey":"smoke-test"}]}}' | json rejected)"
+  "$(pub -X POST "$PUSH_URL/_matrix/push/v1/notify" -d "$notify" | json rejected)"
 expect "push gateway takes only POST" 403 "$(code "$PUSH_URL/_matrix/push/v1/notify")"
 expect "push gateway serves nothing else" 404 "$(code "$PUSH_URL/_matrix/client/versions")"
-case $(pub -X POST "$BASE_URL/_matrix/client/v3/register" -d '{}') in
-  *m.login.registration_token*) pass "registration requires an invite token" ;;
-  *) fail "registration requires an invite token" ;;
-esac
+expect "older push route open to every homeserver" '["smoke-test"]' \
+  "$(pub -X POST "$BASE_URL/_matrix/push/v1/notify" -d "$notify" | json rejected)"
+expect "older push route takes only POST" 403 "$(code "$BASE_URL/_matrix/push/v1/notify")"
 
 if [ "$mode" = public ]; then
-  expect "push route refuses outsiders" 403 \
-    "$(code -X POST "$BASE_URL/_matrix/push/v1/notify" -d '{"notification":{"devices":[]}}')"
   echo "$fails failure(s)"
   exit $((fails > 0))
 fi
 
 # --- Full client flow (server only) -------------------------------------------
-room="" media="" uid="" token="" blob=$(mktemp)
+room="" media="" mas_uid="" blob=$(mktemp)
 cleanup() {
   [ -n "$room" ] && admin_api DELETE "/_synapse/admin/v1/rooms/$room" '{"purge": true}' >/dev/null
   [ -n "$media" ] && admin_api DELETE "/_synapse/admin/v1/media/$media" >/dev/null
-  [ -n "$uid" ] && admin_api POST "/_synapse/admin/v1/deactivate/$uid" '{"erase": true}' >/dev/null
-  [ -n "$token" ] && admin_api DELETE "/_synapse/admin/v1/registration_tokens/$token" >/dev/null
+  [ -n "$mas_uid" ] && { mas_api POST "/api/admin/v1/users/$mas_uid/deactivate" '{}' >/dev/null ||
+    echo "cleanup: deactivating $user failed: deactivate it in MAS by hand" >&2; }
   admin_logout
   rm -f "$blob"
 }
 trap cleanup EXIT
 
 admin_login || exit 1
-token=$(admin_api POST /_synapse/admin/v1/registration_tokens/new '{"uses_allowed": 1}' | json token)
 user="smoketest$(date +%s)"
 pw=$(openssl rand -hex 16)
-reg_url="$BASE_URL/_matrix/client/v3/register"
+mas_uid=$(mas_api POST /api/admin/v1/users "{\"username\": \"$user\"}" | json data.id)
+if [ -n "$mas_uid" ]; then pass "create user in MAS"; else fail "create user in MAS"; exit 1; fi
+mas_api POST "/api/admin/v1/users/$mas_uid/set-password" \
+  "{\"password\": \"$pw\", \"skip_password_check\": true}" >/dev/null
 
-session=$(pub -X POST "$reg_url" -d "{\"username\":\"$user\",\"password\":\"$pw\"}" | json session)
-pub -X POST "$reg_url" -d "{\"auth\":{\"type\":\"m.login.registration_token\",\"token\":\"$token\",\"session\":\"$session\"}}" >/dev/null
-reg=$(pub -X POST "$reg_url" -d "{\"username\":\"$user\",\"password\":\"$pw\",\"refresh_token\":true,\"auth\":{\"type\":\"m.login.dummy\",\"session\":\"$session\"}}")
-uid=$(json user_id <<<"$reg")
-at=$(json access_token <<<"$reg")
-rt=$(json refresh_token <<<"$reg")
-if [ -n "$at" ] && [ -n "$rt" ]; then pass "register with invite token"; else fail "register with invite token: $reg"; exit 1; fi
-expect "invite token is single-use" false \
-  "$(pub "$BASE_URL/_matrix/client/v1/register/m.login.registration_token/validity?token=$token" | json valid)"
+login=$(pub -X POST "$BASE_URL/_matrix/client/v3/login" \
+  -d "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"$user\"},\"password\":\"$pw\",\"refresh_token\":true}")
+at=$(json access_token <<<"$login")
+rt=$(json refresh_token <<<"$login")
+ttl=$(json expires_in_ms <<<"$login")
+if [ -n "$at" ] && [ -n "$rt" ]; then pass "password sign-in through MAS"; else fail "password sign-in through MAS: $login"; exit 1; fi
+if [[ $ttl =~ ^[0-9]+$ ]] && [ "$ttl" -ge 3600000 ] && [ "$ttl" -le 86400000 ]; then
+  pass "access token lasts up to a day"
+else
+  fail "access token lasts up to a day (got ${ttl:-nothing} ms)"
+fi
 
 at=$(pub -X POST "$BASE_URL/_matrix/client/v3/refresh" -d "{\"refresh_token\":\"$rt\"}" | json access_token)
 if [ -n "$at" ]; then pass "refresh token renews access"; else fail "refresh token renews access"; exit 1; fi
-ttl=$(pub -X POST "$BASE_URL/_matrix/client/v3/login" \
-  -d "{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"$user\"},\"password\":\"$pw\"}" | json expires_in_ms)
-if [[ $ttl =~ ^[0-9]+$ ]] && [ "$ttl" -le 60000 ]; then pass "login without refresh token expires within 1m"; else fail "login without refresh token expires within 1m (got ${ttl:-nothing})"; fi
 
 auth=(-H "Authorization: Bearer $at")
+provisioned=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -n "$(pub "${auth[@]}" "$BASE_URL/_matrix/client/v3/account/whoami" | json user_id)" ] && { provisioned=1; break; }
+  sleep 1
+done
+if [ -n "$provisioned" ]; then pass "Synapse accepts the MAS token"; else fail "Synapse accepts the MAS token"; exit 1; fi
 room=$(pub "${auth[@]}" -X POST "$BASE_URL/_matrix/client/v3/createRoom" -d '{"preset":"private_chat"}' | json room_id)
 expect "new rooms are encrypted" m.megolm.v1.aes-sha2 \
   "$(pub "${auth[@]}" "$BASE_URL/_matrix/client/v3/rooms/$room/state/m.room.encryption" | json algorithm)"
