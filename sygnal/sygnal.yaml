@@ -87,3 +87,35 @@ apps:
     push_type: voip
     send_badge_counts: false
 
+  im.zuno.chat.ios.dev:
+    type: apns
+    platform: sandbox
+    # Token auth with the .p8 from Apple Developer, Keys (APNs enabled).
+    # key_id and team_id are identifiers, not secrets. Sygnal refuses to
+    # start while either is empty.
+    keyfile: /sygnal/apns_auth_key_dev.p8
+    key_id: "49T4528UKA"
+    team_id: "5V9UP3J9CK"
+    # The app's bundle ID.
+    topic: im.zuno.chat
+    # The client's default_payload is a visible alert.
+    push_type: alert
+    send_badge_counts: false
+
+  # Release builds. Debug builds register im.zuno.chat.ios.dev (sandbox),
+  # which has no app here, so Sygnal rejects them and Synapse drops the pusher.
+  im.zuno.chat.ios.dev.voip:
+    type: apns
+    platform: sandbox
+    # Token auth with the .p8 from Apple Developer, Keys (APNs enabled).
+    # key_id and team_id are identifiers, not secrets. Sygnal refuses to
+    # start while either is empty.
+    keyfile: /sygnal/apns_auth_key_dev.p8
+    key_id: "49T4528UKA"
+    team_id: "5V9UP3J9CK"
+    # The app's bundle ID.
+    topic: im.zuno.chat.voip
+    # The client's default_payload is a visible alert.
+    push_type: voip
+    send_badge_counts: false
+

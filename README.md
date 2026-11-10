@@ -6,7 +6,8 @@ Single source of truth for the production stack. One host, Docker Compose, Cloud
 client ─▶ Cloudflare ─▶ nginx:443 ─┬─▶ synapse:8008 (main: everything but sync; zuno_calls and zuno_register under /_synapse/client/zuno/)
                                    ├─▶ synapse-sync:8083 (/sync, /events, /initialSync)
                                    └─▶ api.maptiler.com (/maps/{z}/{x}/{y}: map tiles, the key added by nginx)
-synapse-background: background jobs, user directory, push delivery ─▶ nginx ─▶ sygnal ─▶ FCM, APNs
+synapse-background: background jobs, user directory, push delivery ─▶ Cloudflare ─▶ nginx (push.zuno.chat) ─▶ sygnal ─▶ FCM, APNs
+any other homeserver with Zuno app users ─▶ the same push.zuno.chat route
 postgres, redis: backend network only (no internet, unreachable from nginx and sygnal)
 monitoring profile: prometheus, grafana (loopback only) ─▶ alerts to ntfy
                     synapse-background ─▶ synapse-usage-exporter (usage totals, every 3 h)
@@ -19,21 +20,21 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 | `docker-compose.yml` | All services, image versions, networks, log rotation |
 | `synapse/Dockerfile` | The Synapse image: official release plus Zuno's modules, built by `.github/workflows/synapse-image.yml`. Each module's CI publishes its wheel as `ghcr.io/zuno-chat/<module>-wheel:<tag>` on a `v*` tag; bump that tag in the Dockerfile and push; CI tags the build `latest`, which `docker-compose.yml` runs. `homeserver.yaml` loads the modules, so the official image no longer starts |
 | `.env` (from `.env.example`) | Secrets and per-host values. Not in git |
-| `nginx/` | The public edge, on the stock nginx image: `nginx.conf` (routing, refusals, limits; its header says how to test and reload an edit), `cloudflare.conf` (Cloudflare's ranges, for real client IPs and the direct-to-origin fence), `push-allow.sh` (the push route's allow list, from `.env`), `maptiler-key.sh` (the MapTiler key for `/maps/`, from `.env`) |
+| `nginx/` | The public edge, on the stock nginx image: `nginx.conf` (routing, refusals, limits; its header says how to test and reload an edit), `cloudflare.conf` (Cloudflare's ranges, for real client IPs and the direct-to-origin fence), `push-allow.sh` (the allow list for api.zuno.chat's older push route, from `.env`), `maptiler-key.sh` (the MapTiler key for `/maps/`, from `.env`) |
 | `synapse/` | `homeserver.yaml` (shared), `workers/*.yaml`, `log.yaml`, `bootstrap.sh` |
 | `postgres/postgresql.conf`, `redis/redis.conf`, `sygnal/sygnal.yaml` | Service configs |
 | `monitoring/` | Prometheus config; Grafana datasources, dashboards and alert rules as files; postgres-exporter's role and count queries |
-| `sygnal/service_account.json`, `sygnal/apns_auth_key.p8` | Push credentials: Firebase (Android) and the APNs auth key (iOS). Not in git |
+| `sygnal/service_account.json`, `sygnal/apns_auth_key.p8`, `sygnal/apns_auth_key_dev.p8` | Push credentials: Firebase (Android, every build) and the APNs auth keys (iOS: release builds, and debug builds through the sandbox `.dev` apps). Not in git |
 | `ssl/` | Cloudflare Origin CA cert and key for `*.zuno.chat`. Key not in git |
 | `scripts/` | `invite.sh`, `smoke-test.sh`, `backup.sh`: run from anywhere, they `cd` to the repo root |
 
 ## First deploy
 
 1. **Host.** Docker Engine with the compose plugin (Docker's apt repo, not Ubuntu's `docker.io`), `python3`, 2 GB of swap on small hosts. Allow inbound 443 only from [Cloudflare's ranges](https://www.cloudflare.com/ips/), plus SSH. Use the provider's firewall: ports Docker publishes bypass `ufw`.
-2. **Cloudflare.** Proxied DNS record for `api.zuno.chat`, SSL mode *Full (strict)*, Bot Fight Mode off for that host (the app cannot solve challenges), and the push WAF rule below.
-3. **Files.** Clone this repo to e.g. `/opt/zuno`. Copy `.env`, `sygnal/service_account.json`, `sygnal/apns_auth_key.p8` and `ssl/cf_origin_key.key` over separately (`scp`), then:
+2. **Cloudflare.** Proxied DNS records for `api.zuno.chat` and `push.zuno.chat` to this host, SSL mode *Full (strict)*, Bot Fight Mode off for both (neither the app nor a homeserver can solve challenges), and the push WAF rule below.
+3. **Files.** Clone this repo to e.g. `/opt/zuno`. Copy `.env`, `sygnal/service_account.json`, `sygnal/apns_auth_key.p8`, `sygnal/apns_auth_key_dev.p8` and `ssl/cf_origin_key.key` over separately (`scp`), then:
    ```sh
-   chmod 600 .env sygnal/service_account.json sygnal/apns_auth_key.p8 ssl/cf_origin_key.key
+   chmod 600 .env sygnal/service_account.json sygnal/apns_auth_key.p8 sygnal/apns_auth_key_dev.p8 ssl/cf_origin_key.key
    ```
    nginx reads the key as root. Everything else stays world-readable (644): Synapse, Postgres and Redis read their configs as their own users.
 4. **Synapse image.** One-time, for each module `synapse/Dockerfile` names (zuno_calls, zuno_register): push the `v*` tag it names to that repo, whose CI publishes `ghcr.io/zuno-chat/<module>-wheel`, and in that package's settings, *Manage Actions access*, add this repo with the *Read* role, so the workflow's own `GITHUB_TOKEN` can pull it. Run `.github/workflows/synapse-image.yml`; `x-synapse.image` runs the `latest` tag it pushes. In the `modules:` block at the end of `synapse/homeserver.yaml`, fill in zuno_calls' `app_id` and `turn_key_id` (Synapse refuses to start while they are empty), and set zuno_register's `sender_email` to an address Brevo has verified. The server needs `docker login ghcr.io` with a token that has `read:packages` if the image is private.
@@ -52,8 +53,9 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 ## Before launch
 
 - [ ] **App uses refresh tokens.** `homeserver.yaml` gives sessions without one a 1-minute token. The app must pass `refreshToken: true` to `login`/`register` and set `onSoftLogout` on the SDK `Client`. Check: the app is still signed in after 10 idle minutes (catches a missing refresh token) and again the next day (catches a broken refresh: access tokens last 24h).
-- [ ] **Push route fenced.** nginx answers 403 on `/_matrix/push/v1/notify` to any address outside `PUSHER_ALLOWED_CIDRS`; `scripts/smoke-test.sh public` from outside checks it. A Cloudflare WAF custom rule, action *Block*, stops the same requests at the edge as well:
+- [ ] **Push routes.** Every Zuno app registers its pushers at `push.zuno.chat` whatever its homeserver, so that host takes `POST /_matrix/push/v1/notify` from any address, rate-limited per address, with no allow list or WAF challenge in front. `api.zuno.chat`'s older route stays for app versions that registered there: nginx answers 403 to any address outside `PUSHER_ALLOWED_CIDRS`, and a Cloudflare WAF custom rule, action *Block*, stops the same requests at the edge:
   `(http.host eq "api.zuno.chat" and http.request.uri.path eq "/_matrix/push/v1/notify" and not ip.src in {SERVER_IPV4})`.
+  `scripts/smoke-test.sh public` from outside checks both routes.
 - [ ] `nginx/cloudflare.conf` holds Cloudflare's current ranges. nginx drops connections from outside them (and this host's private networks) without answering, so a stale list turns Cloudflare's newest edges away instead of just mislabeling client addresses.
 - [ ] The CF Calls and TURN secrets and `BREVO_API_KEY` are set, and a signup code requested from the app reaches a real inbox.
 - [ ] `https://zuno.chat/.well-known/matrix/client` names the tile route: `"im.zuno.tiles": {"url": "https://api.zuno.chat/maps/{z}/{x}/{y}", "attribution": "MapTiler © OpenStreetMap contributors"}`. The app reads a map with `url`, not a bare string, and falls back to a plain grid otherwise.

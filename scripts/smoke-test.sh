@@ -10,17 +10,20 @@
 #                                  dashboards and alert rules (README.md,
 #                                  Monitoring)
 # Env: BASE_URL       default https://api.zuno.chat
+#      PUSH_URL       default https://push.zuno.chat
 #      WELLKNOWN_URL  default https://zuno.chat/.well-known/matrix/client
 #      CURL_EXTRA     extra curl flags, e.g. for a local rehearsal:
-#                     "-k --connect-to api.zuno.chat:443:127.0.0.1:18443"
+#                     "-k --connect-to api.zuno.chat:443:127.0.0.1:18443
+#                      --connect-to push.zuno.chat:443:127.0.0.1:18443"
 #      ADMIN_USER / ADMIN_PASSWORD   full mode; prompted if unset
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . scripts/lib.sh
 
 mode=${1:-}
-case $mode in public | full | monitoring) ;; *) sed -n '2,16p' "$0"; exit 2 ;; esac
+case $mode in public | full | monitoring) ;; *) sed -n '2,18p' "$0"; exit 2 ;; esac
 BASE_URL=${BASE_URL:-https://api.zuno.chat}
+PUSH_URL=${PUSH_URL:-https://push.zuno.chat}
 WELLKNOWN_URL=${WELLKNOWN_URL:-https://zuno.chat/.well-known/matrix/client}
 CURL_EXTRA=${CURL_EXTRA:-}
 
@@ -85,6 +88,11 @@ expect "signup module reachable" 400 \
 expect "map tiles served to the app" "200 image/png" \
   "$(pub -A 'Zuno/smoke-test (im.zuno.chat)' -o /dev/null -w '%{http_code} %{content_type}' "$BASE_URL/maps/0/0/0")"
 expect "map tiles refused to other clients" 403 "$(code "$BASE_URL/maps/0/0/0")"
+expect "push gateway open to every homeserver" '["smoke-test"]' \
+  "$(pub -X POST "$PUSH_URL/_matrix/push/v1/notify" \
+    -d '{"notification":{"devices":[{"app_id":"smoke.test","pushkey":"smoke-test"}]}}' | json rejected)"
+expect "push gateway takes only POST" 403 "$(code "$PUSH_URL/_matrix/push/v1/notify")"
+expect "push gateway serves nothing else" 404 "$(code "$PUSH_URL/_matrix/client/versions")"
 case $(pub -X POST "$BASE_URL/_matrix/client/v3/register" -d '{}') in
   *m.login.registration_token*) pass "registration requires an invite token" ;;
   *) fail "registration requires an invite token" ;;
