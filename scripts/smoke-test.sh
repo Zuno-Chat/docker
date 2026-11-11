@@ -98,7 +98,7 @@ expect "MAS admin API not public" 404 "$(code "$AUTH_URL/api/admin/v1/users")"
 expect "MAS metrics not public" 404 "$(code "$AUTH_URL/metrics")"
 expect "MAS health not public" 404 "$(code "$AUTH_URL/health")"
 # One tile, billed by MapTiler like any other.
-expect "map tiles served to the app" "200 image/png" \
+expect "map tiles served to the app" "200 image/webp" \
   "$(pub -A 'Zuno/smoke-test (im.zuno.chat)' -o /dev/null -w '%{http_code} %{content_type}' "$BASE_URL/maps/0/0/0")"
 expect "map tiles refused to other clients" 403 "$(code "$BASE_URL/maps/0/0/0")"
 notify='{"notification":{"devices":[{"app_id":"smoke.test","pushkey":"smoke-test"}]}}'
