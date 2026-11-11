@@ -119,7 +119,7 @@ services:
       net.core.somaxconn: 8192
       net.ipv4.tcp_max_syn_backlog: 8192
     environment:
-      # maptiler-key.sh hands it to the /maps/ route.
+      # maptiler-key.sh hands it to the tile routes.
       MAPTILER_API_KEY: "${MAPTILER_API_KEY:?set in .env: MapTiler API key}"
     volumes:
       # A directory, not single files: an edit shows up in the container, so

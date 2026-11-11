@@ -12,21 +12,24 @@
 # Env: BASE_URL       default https://api.zuno.chat
 #      AUTH_URL       default https://auth.zuno.chat
 #      PUSH_URL       default https://push.zuno.chat
+#      MAPS_URL       default https://maps.zuno.chat
 #      WELLKNOWN_URL  default https://zuno.chat/.well-known/matrix/client
 #      CURL_EXTRA     extra curl flags, e.g. for a local rehearsal:
 #                     "-k --connect-to api.zuno.chat:443:127.0.0.1:18443
 #                      --connect-to auth.zuno.chat:443:127.0.0.1:18443
-#                      --connect-to push.zuno.chat:443:127.0.0.1:18443"
+#                      --connect-to push.zuno.chat:443:127.0.0.1:18443
+#                      --connect-to maps.zuno.chat:443:127.0.0.1:18443"
 #      ADMIN_USER     full mode: the MAS admin account; prompted if unset
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 . scripts/lib.sh
 
 mode=${1:-}
-case $mode in public | full | monitoring) ;; *) sed -n '2,20p' "$0"; exit 2 ;; esac
+case $mode in public | full | monitoring) ;; *) sed -n '2,22p' "$0"; exit 2 ;; esac
 BASE_URL=${BASE_URL:-https://api.zuno.chat}
 AUTH_URL=${AUTH_URL:-https://auth.zuno.chat}
 PUSH_URL=${PUSH_URL:-https://push.zuno.chat}
+MAPS_URL=${MAPS_URL:-https://maps.zuno.chat}
 WELLKNOWN_URL=${WELLKNOWN_URL:-https://zuno.chat/.well-known/matrix/client}
 CURL_EXTRA=${CURL_EXTRA:-}
 
@@ -97,10 +100,13 @@ expect "legacy registration refused" 403 "$(code -X POST "$BASE_URL/_matrix/clie
 expect "MAS admin API not public" 404 "$(code "$AUTH_URL/api/admin/v1/users")"
 expect "MAS metrics not public" 404 "$(code "$AUTH_URL/metrics")"
 expect "MAS health not public" 404 "$(code "$AUTH_URL/health")"
-# One tile, billed by MapTiler like any other.
-expect "map tiles served to the app" "200 image/webp" \
-  "$(pub -A 'Zuno/smoke-test (im.zuno.chat)' -o /dev/null -w '%{http_code} %{content_type}' "$BASE_URL/maps/0/0/0")"
-expect "map tiles refused to other clients" 403 "$(code "$BASE_URL/maps/0/0/0")"
+# Two tiles, billed by MapTiler like any other.
+tile() { pub -A 'Zuno/smoke-test (im.zuno.chat)' -o /dev/null -w '%{http_code} %{content_type}' "$1"; }
+expect "map tiles served to the app" "200 image/webp" "$(tile "$MAPS_URL/0/0/0")"
+expect "map tiles refused to other clients" 403 "$(code "$MAPS_URL/0/0/0")"
+expect "map host serves nothing else" 404 "$(code "$MAPS_URL/_matrix/client/versions")"
+expect "older map route served to the app" "200 image/webp" "$(tile "$BASE_URL/maps/0/0/0")"
+expect "older map route refused to other clients" 403 "$(code "$BASE_URL/maps/0/0/0")"
 notify='{"notification":{"devices":[{"app_id":"smoke.test","pushkey":"smoke-test"}]}}'
 expect "push gateway open to every homeserver" '["smoke-test"]' \
   "$(pub -X POST "$PUSH_URL/_matrix/push/v1/notify" -d "$notify" | json rejected)"

@@ -6,7 +6,7 @@ Single source of truth for the production stack. One host, Docker Compose, Cloud
 client ─▶ Cloudflare ─▶ nginx:443 ─┬─▶ synapse:8008 (main: everything but sync and sign-in; zuno_calls and zuno_push under /_synapse/client/zuno/)
                                    ├─▶ synapse-sync:8083 (/sync, /events, /initialSync)
                                    ├─▶ mas:8080 (auth.zuno.chat: accounts, sign-in pages, OAuth; and api.zuno.chat's login, logout, refresh)
-                                   └─▶ api.maptiler.com (/maps/{z}/{x}/{y}: map tiles, the key added by nginx)
+                                   └─▶ api.maptiler.com (maps.zuno.chat/{z}/{x}/{y}: map tiles for every Zuno app, the key added by nginx)
 every Synapse process ─▶ mas:8080: checks every access token
 mas ─▶ synapse:8008 (creates users and devices, internal only), Brevo SMTP (sign-up and reset mail), Turnstile
 synapse-background: background jobs, user directory, push delivery ─▶ Cloudflare ─▶ nginx (push.zuno.chat) ─▶ sygnal ─▶ FCM, APNs
@@ -23,7 +23,7 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 | `docker-compose.yml` | All services, image versions, networks, log rotation |
 | `synapse/Dockerfile` | The Synapse image: official release plus Zuno's modules, built by `.github/workflows/synapse-image.yml`. Each module's CI publishes its wheel as `ghcr.io/zuno-chat/<module>-wheel:<tag>` on a `v*` tag; bump that tag in the Dockerfile and push; CI tags the build `latest`, which `docker-compose.yml` runs. `homeserver.yaml` loads the modules, so the official image no longer starts |
 | `.env` (from `.env.example`) | Secrets and per-host values. Not in git |
-| `nginx/` | The public edge, on the stock nginx image: `nginx.conf` (routing, refusals, limits; its header says how to test and reload an edit), `cloudflare.conf` (Cloudflare's ranges, for real client IPs and the direct-to-origin fence), `maptiler-key.sh` (the MapTiler key for `/maps/`, from `.env`) |
+| `nginx/` | The public edge, on the stock nginx image: `nginx.conf` (routing, refusals, limits; its header says how to test and reload an edit), `cloudflare.conf` (Cloudflare's ranges, for real client IPs and the direct-to-origin fence), `map-tiles.conf` (the tile proxy both tile routes share), `maptiler-key.sh` (its MapTiler key, from `.env`) |
 | `synapse/` | `homeserver.yaml` (shared), `workers/*.yaml`, `log.yaml`, `bootstrap.sh` |
 | `mas/` | Accounts and sign-in (MAS, Matrix Authentication Service): `Dockerfile` (an exact MAS release plus the Zuno theme in `theme/`, built by `.github/workflows/mas-image.yml`), `config.yaml` (no secrets), `init.sh` (generates MAS's keys into the `mas-data` volume on first start, and writes `.env`'s MAS values into its config on every start) |
 | `postgres/postgresql.conf`, `postgres/mas-db.sql`, `redis/redis.conf`, `sygnal/sygnal.yaml` | Service configs; `mas-db.sql` creates MAS's role and database, run by `mas-db-init` on every start |
@@ -35,7 +35,7 @@ admin: synapse:8008 on the server's loopback only, for an admin client over an S
 ## First deploy
 
 1. **Host.** Docker Engine with the compose plugin (Docker's apt repo, not Ubuntu's `docker.io`), `python3`, 2 GB of swap on small hosts. Allow inbound 443 only from [Cloudflare's ranges](https://www.cloudflare.com/ips/), plus SSH. Use the provider's firewall: ports Docker publishes bypass `ufw`.
-2. **Cloudflare.** Proxied DNS records for `api.zuno.chat`, `auth.zuno.chat` and `push.zuno.chat` to this host, SSL mode *Full (strict)*, Bot Fight Mode off for `api` and `push` (neither the app nor a homeserver can solve challenges). A Turnstile widget for `auth.zuno.chat`, its keys in `.env`.
+2. **Cloudflare.** Proxied DNS records for `api.zuno.chat`, `auth.zuno.chat`, `push.zuno.chat` and `maps.zuno.chat` to this host, SSL mode *Full (strict)*, Bot Fight Mode off for `api`, `push` and `maps` (neither the app nor a homeserver can solve challenges). A Turnstile widget for `auth.zuno.chat`, its keys in `.env`.
 3. **Files.** Clone this repo to e.g. `/opt/zuno`. Copy `.env`, `sygnal/service_account.json`, `sygnal/apns_auth_key.p8`, `sygnal/apns_auth_key_dev.p8` and `ssl/cf_origin_key.key` over separately (`scp`), then:
    ```sh
    chmod 600 .env sygnal/service_account.json sygnal/apns_auth_key.p8 sygnal/apns_auth_key_dev.p8 ssl/cf_origin_key.key
@@ -71,9 +71,9 @@ MAS owns sign-up, sign-in, passwords and sessions, at `auth.zuno.chat`. Sign-up 
 - [ ] `nginx/cloudflare.conf` holds Cloudflare's current ranges. nginx drops connections from outside them (and this host's private networks) without answering, so a stale list turns Cloudflare's newest edges away instead of just mislabeling client addresses.
 - [ ] The CF Calls and TURN secrets, Brevo's SMTP login and the Turnstile keys are set, and a sign-up code and a password-reset email from `auth.zuno.chat` reach a real inbox.
 - [ ] The privacy policy names what MAS adds: email addresses kept here and sent through Brevo, Turnstile on sign-up, and the IP addresses and user agents MAS keeps per session.
-- [ ] `https://zuno.chat/.well-known/matrix/client` names the tile route: `"im.zuno.tiles": {"url": "https://api.zuno.chat/maps/{z}/{x}/{y}", "attribution": "MapTiler © OpenStreetMap contributors"}`. The app reads a map with `url`, not a bare string, and falls back to a plain grid otherwise.
+- [ ] **Tile routes.** Every Zuno app fetches tiles from `maps.zuno.chat/{z}/{x}/{y}` whatever its homeserver, so MapTiler bills Zuno for users on other homeservers too, under one shared ceiling. Older app versions read the route from `https://zuno.chat/.well-known/matrix/client`, which keeps naming it: `"im.zuno.tiles": {"url": "https://api.zuno.chat/maps/{z}/{x}/{y}", "attribution": "MapTiler © OpenStreetMap contributors"}`. `scripts/smoke-test.sh public` checks both.
 - [ ] `MAPTILER_API_KEY` is restricted to the User-Agent `im.zuno.chat` at MapTiler, and any key that was ever published in the well-known is revoked.
-- [ ] No Cloudflare Cache Rule overrides the origin's cache headers on `api.zuno.chat/maps/`: nginx marks tiles `private`, because MapTiler allows only per-user caches, and a shared Cloudflare copy would also serve tiles to clients that aren't the app. `scripts/smoke-test.sh public` catches it.
+- [ ] No Cloudflare Cache Rule overrides the origin's cache headers on `maps.zuno.chat` or `api.zuno.chat/maps/`: nginx marks tiles `private`, because MapTiler allows only per-user caches, and a shared Cloudflare copy would also serve tiles to clients that aren't the app. `scripts/smoke-test.sh public` catches it.
 - [ ] A real push reaches a phone while the app is in the background.
 - [ ] Backups run from cron, the first set has reached off-host storage, and a restore has been tested (below).
 - [ ] Monitoring is on, `scripts/smoke-test.sh monitoring` reports 0 failures, and an alert has reached your phone.
