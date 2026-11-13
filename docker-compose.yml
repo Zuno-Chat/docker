@@ -9,7 +9,9 @@
 # stores, so neither nginx nor Sygnal can reach Postgres or Redis.
 # `monitoring` (internal) carries scrapes and Synapse's usage report to
 # synapse-usage-exporter; only Grafana reaches out, through `monitoring-egress`.
-# postgres-exporter alone sits on both `backend` and `monitoring`.
+# postgres-exporter alone sits on both `backend` and `monitoring`. `admin`
+# (internal) links the admin console to Synapse's main process alone; the
+# console's loopback port is published through `admin-egress`.
 #
 # Compose checks ${VAR:?} even in services whose profile is off, so the
 # monitoring profile's secrets use ${VAR:-} and are checked at container start.
@@ -272,6 +274,7 @@ services:
     # outside this host can reach it; the public edge (nginx) still refuses
     # /_synapse/admin.
     ports: ["127.0.0.1:8008:8008"]
+    networks: [edge, backend, monitoring, admin]
     command: run -m synapse.app.homeserver --config-path=/config/homeserver.yaml
     healthcheck:
       test: ["CMD-SHELL", "curl -fSs http://localhost:8008/health || exit 1"]
@@ -344,6 +347,24 @@ services:
       timeout: 5s
       retries: 4
       start_period: 25s
+
+  admin:
+    container_name: zuno_admin
+    image: ghcr.io/zuno-chat/zuno-admin:sha-dd54c44
+    restart: unless-stopped
+    logging: *logging
+    ports: ["127.0.0.1:8082:8080"]
+    environment:
+      SYNAPSE_BASE_URL: http://synapse:8008
+      GOMEMLIMIT: 48MiB
+    volumes:
+      - admin-data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [admin, admin-egress]
+    cpus: 0.25
+    mem_limit: 64m
 
   # --- Monitoring: COMPOSE_PROFILES=push,monitoring (README.md, Monitoring) ---
 
@@ -567,10 +588,14 @@ networks:
   monitoring:
     internal: true
   monitoring-egress:
+  admin:
+    internal: true
+  admin-egress:
 
 volumes:
   postgres-data:
   synapse-data:
   mas-data:
+  admin-data:
   prometheus-data:
   grafana-data:
