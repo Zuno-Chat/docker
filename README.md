@@ -15,7 +15,7 @@ postgres (databases synapse and mas), redis: backend network only (no internet, 
 monitoring profile: prometheus, grafana (loopback only) ─▶ alerts to ntfy
                     synapse-background ─▶ synapse-usage-exporter (usage totals, every 3 h)
                     node-exporter (the host), postgres-exporter (Postgres, read-only role)
-admin: synapse:8008 on the server's loopback only, for an admin client over an SSH tunnel
+admin: zuno-admin console, loopback only, over an SSH tunnel ─▶ synapse:8008 (admin API), mas:8081 (token exchange, MAS admin API)
 ```
 
 | Path | What |
@@ -129,7 +129,7 @@ Each alert rule is tied to the panel that shows it: that panel marks the alert's
 
 **Alerts.** Urgent (max priority): a Synapse process down, MAS down, Postgres down, a disk under 10% free. Warning: Synapse CPU saturated; push deliveries to Sygnal failing; Sygnal down; APNs or FCM refusing every push for 30 minutes (the `.p8` key or the service account); Cloudflare Calls unreachable; three iOS rings failing in 30 minutes; a zuno_push feature not serving; an MAS email given up on after its retries; a disk under 20% free; host memory under 10%; an OOM kill; no backup in 26 hours; a Postgres transaction idle for over 5 minutes; node-exporter, postgres-exporter or synapse-usage-exporter down.
 
-**Account and report notifications.** Besides alerts, ntfy gets *New account* (low priority) when someone registers and *New report* (high priority) when a message, room or user is reported, about a minute later and once per change: "A new account was created.", "2 new accounts were created.", "A room was reported. Review it in the admin client." They never say who registered, who reported whom, or why. postgres-exporter reads only counts, through two functions that return nothing else (`monitoring/postgres/monitor-role.sql`, `queries.yaml`), and the alert rules compare them with a minute earlier (`rules.yaml`, group *events*). They send no resolved message, and the *Alerts* list on *Zuno overview* leaves them out. ntfy learns only that and when an account or a report was created; if `NTFY_URL` is ntfy.sh, that is a third party. Review reports with the admin client (*Administration*).
+**Account and report notifications.** Besides alerts, ntfy gets *New account* (low priority) when someone registers and *New report* (high priority) when a message, room or user is reported, about a minute later and once per change: "A new account was created.", "2 new accounts were created.", "A room was reported. Review it in the admin client." They never say who registered, who reported whom, or why. postgres-exporter reads only counts, through two functions that return nothing else (`monitoring/postgres/monitor-role.sql`, `queries.yaml`), and the alert rules compare them with a minute earlier (`rules.yaml`, group *events*). They send no resolved message, and the *Alerts* list on *Zuno overview* leaves them out. ntfy learns only that and when an account or a report was created; if `NTFY_URL` is ntfy.sh, that is a third party. Review reports with the admin console (*Administration*).
 
 **What is not covered.** There is no log collection and no error tracker, and nothing watches Redis, nginx or the public URL, so no alert can fire on them. Logs live only in Docker's rotated files: read them with `docker compose logs`, not in Grafana. node-exporter sits on the internal monitoring network, so it reports no host network traffic: its network collectors are off.
 
@@ -156,7 +156,18 @@ Each alert rule is tied to the panel that shows it: that panel marks the alert's
 
 ## Administration
 
-No admin UI runs in this stack, and none is chosen yet. The `synapse` service publishes its client port on the server's loopback, so an admin client on your own machine reaches Synapse's admin API through an SSH tunnel:
+The `admin` service runs the zuno-admin console (reports, users, rooms, server notices, an audit log of every change) on the server's loopback only:
+
+| UI | Reach it | Log in |
+|---|---|---|
+| zuno-admin | `ssh -L 8082:localhost:8082 <server>`, then http://localhost:8082 | An MAS admin account, through `auth.zuno.chat` |
+
+- **It signs in as its own MAS client**, *Zuno Admin* in `mas/config.yaml`, whose secret is `ADMIN_CLIENT_SECRET` in `.env`; `mas/init.sh` hands it to MAS on every start.
+- **The tunnel must use local port 8082:** MAS redirects only to `http://localhost:8082/callback`.
+- **It reaches only Synapse's main process and MAS's internal listener**, over the internal `admin` network; that listener serves `oauth` for the console's token exchange and is never routed publicly.
+- **Its audit log is the only record of admin actions**, kept in the `admin-data` volume, which `scripts/backup.sh` does not archive.
+
+Any other admin client reaches Synapse's admin API through its client port, which the `synapse` service also publishes on the server's loopback:
 
 ```sh
 ssh -L 8008:localhost:8008 <server>

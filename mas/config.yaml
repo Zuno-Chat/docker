@@ -16,6 +16,7 @@ http:
         - name: health
         - name: prometheus
         - name: adminapi
+        - name: oauth
       binds:
         - address: "[::]:8081"
 
@@ -85,6 +86,12 @@ clients:
   - client_id: 01M6KQD7M2ZZ5FC1K5DV98698S
     client_auth_method: client_secret_basic
     client_secret_file: /data/scripts_client_secret
+  - client_id: 01M7B3Y6EWAGK8NSWXRKBQWCEJ
+    client_name: Zuno Admin
+    client_auth_method: client_secret_basic
+    client_secret_file: /data/admin_client_secret
+    redirect_uris:
+      - http://localhost:8082/callback
 
 policy:
   data:

@@ -10,8 +10,8 @@
 # `monitoring` (internal) carries scrapes and Synapse's usage report to
 # synapse-usage-exporter; only Grafana reaches out, through `monitoring-egress`.
 # postgres-exporter alone sits on both `backend` and `monitoring`. `admin`
-# (internal) links the admin console to Synapse's main process alone; the
-# console's loopback port is published through `admin-egress`.
+# (internal) links the admin console to Synapse's main process and MAS
+# alone; the console's loopback port is published through `admin-egress`.
 #
 # Compose checks ${VAR:?} even in services whose profile is off, so the
 # monitoring profile's secrets use ${VAR:-} and are checked at container start.
@@ -54,6 +54,7 @@ x-mas-env: &mas-env
   SMTP_PASSWORD: "${BREVO_SMTP_KEY:?set in .env}"
   TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:?set in .env}"
   TURNSTILE_SECRET: "${TURNSTILE_SECRET_KEY:?set in .env}"
+  ADMIN_CLIENT_SECRET: "${ADMIN_CLIENT_SECRET:?set in .env}"
 
 x-synapse: &synapse
   # The zuno-synapse build (.github/workflows/synapse-image.yml):
@@ -242,7 +243,7 @@ services:
     environment:
       <<: *mas-env
       MAS_CONFIG: /config/config.yaml:/data/keys.yaml:/data/env.yaml
-    networks: [edge, backend, monitoring]
+    networks: [edge, backend, monitoring, admin]
     mem_limit: 384m
     healthcheck:
       test: ["CMD", "/busybox/wget", "-qO/dev/null", "http://127.0.0.1:8081/health"]
@@ -350,12 +351,16 @@ services:
 
   admin:
     container_name: zuno_admin
-    image: ghcr.io/zuno-chat/zuno-admin:sha-dd54c44
+    image: ghcr.io/zuno-chat/zuno-admin:latest
     restart: unless-stopped
     logging: *logging
     ports: ["127.0.0.1:8082:8080"]
     environment:
       SYNAPSE_BASE_URL: http://synapse:8008
+      MAS_URL: http://mas:8081
+      MAS_PUBLIC_URL: https://auth.zuno.chat
+      MAS_CLIENT_ID: 01M7B3Y6EWAGK8NSWXRKBQWCEJ
+      MAS_CLIENT_SECRET: "${ADMIN_CLIENT_SECRET:?set in .env}"
       GOMEMLIMIT: 48MiB
     volumes:
       - admin-data:/data

@@ -15,6 +15,7 @@ check SMTP_USERNAME "${SMTP_USERNAME:-}"
 check SMTP_PASSWORD "${SMTP_PASSWORD:-}"
 check TURNSTILE_SITE_KEY "${TURNSTILE_SITE_KEY:-}"
 check TURNSTILE_SECRET "${TURNSTILE_SECRET:-}"
+check ADMIN_CLIENT_SECRET "${ADMIN_CLIENT_SECRET:-}"
 
 if [ ! -s "$data/keys.yaml" ]; then
   mas-cli config generate --output "$data/generated.yaml.tmp"
@@ -31,6 +32,9 @@ random_once() {
 }
 random_once scripts_client_secret
 random_once password_pepper
+
+printf %s "$ADMIN_CLIENT_SECRET" >"$data/admin_client_secret.tmp"
+mv "$data/admin_client_secret.tmp" "$data/admin_client_secret"
 
 cat >"$data/env.yaml.tmp" <<EOF
 matrix:
